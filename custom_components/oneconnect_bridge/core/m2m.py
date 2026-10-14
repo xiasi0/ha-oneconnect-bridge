@@ -1,10 +1,8 @@
-"""Private HiLink bridge CoAP/TCP framing used by the Python gateway."""
-
+"""OneConnect Bridge 私有 CoAP/TCP 帧协议."""
 from __future__ import annotations
 
 from dataclasses import dataclass
 import json
-
 
 COAP_POST = 0x02
 URI_PATH = 11
@@ -17,10 +15,8 @@ COAP_PAYLOAD_MARKER = 0xFF
 BRIDGE_COAP_TCP_HEADER = 0x92
 BRIDGE_COAP_CONTENT = 0x45
 
-
 class CoapTcpProtocolError(ValueError):
     """Raised when a private bridge CoAP/TCP message is malformed."""
-
 
 @dataclass(frozen=True)
 class CoapTcpOption:
@@ -32,7 +28,6 @@ class CoapTcpOption:
     @classmethod
     def text(cls, number: int, value: str) -> "CoapTcpOption":
         return cls(number=number, value=value.encode("utf-8"))
-
 
 @dataclass(frozen=True)
 class BridgeCloudMessage:
@@ -60,7 +55,6 @@ class BridgeCloudMessage:
         token = data[2 : 2 + token_length]
         options, payload = _decode_options_and_payload(data[2 + token_length :])
         return cls(code=code, token=token, options=tuple(options), payload=payload)
-
 
 @dataclass(frozen=True)
 class BridgeCloudRequest:
@@ -106,7 +100,6 @@ class BridgeCloudRequest:
         if len(header) > 0xFFFF:
             raise CoapTcpProtocolError("bridge header exceeds its two-byte length")
         return len(header).to_bytes(2, "big") + bytes(header) + self.payload
-
 
 @dataclass(frozen=True)
 class BridgeDeviceInfo:
@@ -158,7 +151,6 @@ class BridgeDeviceInfo:
             "subProdId": "00",
         }
 
-
 def encode_bridge_json(payload: dict[str, object]) -> bytes:
     """Serialize activation JSON with the captured comma spacing."""
 
@@ -166,14 +158,12 @@ def encode_bridge_json(payload: dict[str, object]) -> bytes:
         "utf-8"
     )
 
-
 def encode_bridge_compact_json(payload: object) -> bytes:
     """Serialize compact JSON used by post-activation bridge requests."""
 
     return json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode(
         "utf-8"
     )
-
 
 BRIDGE_GATEWAY_SYNC_SERVICES: tuple[tuple[str, str], ...] = (
     ("netInfo", "netInfo"),
@@ -185,7 +175,6 @@ BRIDGE_GATEWAY_SYNC_SERVICES: tuple[tuple[str, str], ...] = (
     ("delay", "delay"),
     ("timeZone", "timeZone"),
 )
-
 
 def build_bridge_dev_info_sync_request(
     *,
@@ -220,7 +209,6 @@ def build_bridge_dev_info_sync_request(
         access_token=access_token,
     )
 
-
 def build_bridge_activate_request(
     *, code: str, device_info: BridgeDeviceInfo, token: bytes
 ) -> BridgeCloudRequest:
@@ -240,7 +228,6 @@ def build_bridge_activate_request(
         ),
     )
 
-
 def build_bridge_login_request(
     *, dev_id: str, secret: str, token: bytes
 ) -> BridgeCloudRequest:
@@ -255,7 +242,6 @@ def build_bridge_login_request(
             {"devId": dev_id, "secret": secret, "powerType": 1, "capSet": "01"}
         ),
     )
-
 
 def build_bridge_revoke_request(
     *, access_token: str, token: bytes, sequence_number: int
@@ -274,7 +260,6 @@ def build_bridge_revoke_request(
         payload=b"{}",
         access_token=access_token,
     )
-
 
 def build_bridge_grs_request(
     *, dev_id: str, access_token: str, token: bytes, sequence_number: int
@@ -309,7 +294,6 @@ def build_bridge_grs_request(
         access_token=access_token,
     )
 
-
 def build_bridge_heartbeat_request(
     *,
     access_token: str,
@@ -335,7 +319,6 @@ def build_bridge_heartbeat_request(
         access_token=access_token,
     )
 
-
 def _append_bridge_option(output: bytearray, previous: int, option: CoapTcpOption) -> None:
     if option.number < previous:
         raise CoapTcpProtocolError("bridge options must be ordered")
@@ -345,7 +328,6 @@ def _append_bridge_option(output: bytearray, previous: int, option: CoapTcpOptio
     output.extend(delta_extension)
     output.extend(length_extension)
     output.extend(option.value)
-
 
 def _encode_extended(value: int) -> tuple[int, bytes]:
     if value < 0:
@@ -357,7 +339,6 @@ def _encode_extended(value: int) -> tuple[int, bytes]:
     if value < 65805:
         return 14, (value - 269).to_bytes(2, "big")
     raise CoapTcpProtocolError("CoAP option value is too large")
-
 
 def _decode_extended(nibble: int, packet: bytes, position: int) -> tuple[int, int]:
     if nibble < 13:
@@ -371,7 +352,6 @@ def _decode_extended(nibble: int, packet: bytes, position: int) -> tuple[int, in
             raise CoapTcpProtocolError("missing two-byte option extension")
         return int.from_bytes(packet[position : position + 2], "big") + 269, position + 2
     raise CoapTcpProtocolError("reserved CoAP option nibble")
-
 
 def _decode_options_and_payload(packet: bytes) -> tuple[list[CoapTcpOption], bytes]:
     options: list[CoapTcpOption] = []
@@ -390,7 +370,6 @@ def _decode_options_and_payload(packet: bytes) -> tuple[list[CoapTcpOption], byt
         options.append(CoapTcpOption(number, packet[position : position + length]))
         position += length
     return options, b""
-
 
 def encode_bridge_message(
     *,

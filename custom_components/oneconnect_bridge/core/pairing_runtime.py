@@ -1,5 +1,4 @@
-"""Implement the captured LAN discovery, SPEKE, and CloudSetup/v2 responder."""
-
+"""OneConnect Bridge 局域网配对应答."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -27,9 +26,7 @@ from .speke import (
     decode_cloud_setup_auth_info,
 )
 
-
 CloudSetupRecord = Callable[[CloudSetupBindingInfo | CloudSetupAuthInfo, bytes, bytes], None]
-
 
 @dataclass(frozen=True)
 class PairingResult:
@@ -44,7 +41,6 @@ class PairingResult:
     decoded_payload_kind: str | None = None
     decoded_root_keys: tuple[str, ...] | None = None
     decoded_data_keys: tuple[str, ...] | None = None
-
 
 def _summarize_cloud_setup_shape(
     plaintext: bytes,
@@ -61,9 +57,8 @@ def _summarize_cloud_setup_shape(
     data_keys = tuple(sorted(data)) if isinstance(data, dict) else None
     return "object", tuple(sorted(root)), data_keys
 
-
 class LocalPairingResponder:
-    """Keep one pairing session per source IP because the app changes UDP ports during SPEKE."""
+    """应答实测的本地 HiLink 配对资源."""
 
     def __init__(
         self,
@@ -77,6 +72,11 @@ class LocalPairingResponder:
         self._discovery_response_message_id = discovery_response_message_id
         self._on_cloud_setup_record = on_cloud_setup_record
         self._sessions: dict[str, SpekeServer] = {}
+
+    @property
+    def has_active_session(self) -> bool:
+        """App 已开始 SPEKE 即视为配对进行中（PIN 已验证，CloudSetup 在路上）."""
+        return bool(self._sessions)
 
     def handle(self, packet: bytes, peer_host: str) -> tuple[bytes | None, PairingResult]:
         """Process one CoAP datagram without exposing its authenticated body."""
@@ -177,7 +177,7 @@ class LocalPairingResponder:
             except CloudSetupProtocolError:
                 accepted_info = decode_cloud_setup_auth_info(plaintext)
         except CloudSetupProtocolError:
-            # Return errcode -1 only for the exact malformed plaintext observed from the official SDK.
+            # 官方 SDK 对此认证明文实测回加密 {"errcode":-1}；其余畸形不归并到该错误
             if plaintext == b'{"data":{}}':
                 return self._ack(request, encrypt(b'{"errcode":-1}')), PairingResult(
                     kind="known_invalid_cloud_setup",

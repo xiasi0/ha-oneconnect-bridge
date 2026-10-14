@@ -1,5 +1,4 @@
-"""Implement the evidence-backed SPEKE/CloudSetup subset shared by the C SDK and public OpenHarmony stack."""
-
+"""OneConnect Bridge SPEKE 与 CloudSetup/v2 原语."""
 from __future__ import annotations
 
 import base64
@@ -17,7 +16,6 @@ try:
 except ImportError:  # pragma: no cover - exercised only without cryptography
     AESGCM = None
     InvalidTag = ValueError
-
 
 RandomBytes = Callable[[int], bytes]
 
@@ -43,7 +41,7 @@ _BASE_INFO = b"hichain_speke_base_info"
 _SESSION_KEY_INFO = b"hichain_speke_sessionkey_info"
 _DATA_KEY_INFO = b"hichain_return_key"
 
-# Use the RFC 3526 2048-bit group selected by the public SDK for support256mod.
+# RFC 3526 group 14：公开实现 support256mod 模式所选的同一 2048 位素数
 _MODP_2048_PRIME = int(
     "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD1"
     "29024E088A67CC74020BBEA63B139B22514A08798E3404DD"
@@ -59,18 +57,14 @@ _MODP_2048_PRIME = int(
     16,
 )
 
-
 class SpekeProtocolError(ValueError):
     """A received local-pairing message violates the verified contract."""
-
 
 class CloudSetupProtocolError(ValueError):
     """A CloudSetup/v2 payload violates the verified transport contract."""
 
-
 def _secure_random(length: int) -> bytes:
     return secrets.token_bytes(length)
-
 
 def _take_random(source: RandomBytes, length: int) -> bytes:
     value = source(length)
@@ -78,17 +72,14 @@ def _take_random(source: RandomBytes, length: int) -> bytes:
         raise SpekeProtocolError(f"random source must return exactly {length} bytes")
     return value
 
-
 def _pin_bytes(pin: str | bytes) -> bytes:
     value = pin.encode("ascii") if isinstance(pin, str) else pin
     if not isinstance(value, bytes) or not value or not value.isascii():
         raise SpekeProtocolError("PIN must be a non-empty ASCII string or bytes")
     return value
 
-
 def _compact_json(value: Mapping[str, object]) -> bytes:
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-
 
 def _load_json(payload: bytes | str) -> dict[str, object]:
     if isinstance(payload, str):
@@ -102,7 +93,6 @@ def _load_json(payload: bytes | str) -> dict[str, object]:
     if not isinstance(value, dict):
         raise SpekeProtocolError("SPEKE root must be a JSON object")
     return value
-
 
 def _read_envelope(payload: bytes | str) -> tuple[str, int, dict[str, object]]:
     root = _load_json(payload)
@@ -118,7 +108,6 @@ def _read_envelope(payload: bytes | str) -> tuple[str, int, dict[str, object]]:
         raise SpekeProtocolError("SPEKE message or payload is invalid")
     return session_id, message, inner
 
-
 def _make_envelope(session_id: str, message: int, payload: Mapping[str, object]) -> bytes:
     return _compact_json(
         {
@@ -130,19 +119,16 @@ def _make_envelope(session_id: str, message: int, payload: Mapping[str, object])
         }
     )
 
-
 def _version_payload() -> dict[str, str]:
     return {
         "currentVersion": SPEKE_VERSION,
         "minVersion": SPEKE_VERSION,
     }
 
-
 def _require_version(payload: Mapping[str, object]) -> None:
     version = payload.get("version")
     if not isinstance(version, dict) or version.get("currentVersion") != SPEKE_VERSION:
         raise SpekeProtocolError("unsupported SPEKE currentVersion")
-
 
 def _decode_hex(value: object, name: str, expected_length: int | None = None) -> bytes:
     if not isinstance(value, str) or not value:
@@ -157,10 +143,8 @@ def _decode_hex(value: object, name: str, expected_length: int | None = None) ->
         )
     return result
 
-
 def _hex(value: bytes) -> str:
     return value.hex().upper()
-
 
 def _hkdf_sha256(*, salt: bytes, info: bytes, material: bytes, length: int) -> bytes:
     """RFC 5869 HKDF-SHA256, matching the public HiLink key schedule."""
@@ -175,7 +159,6 @@ def _hkdf_sha256(*, salt: bytes, info: bytes, material: bytes, length: int) -> b
         output.extend(block)
     return bytes(output[:length])
 
-
 @dataclass
 class _SpekeContext:
     salt: bytes = field(repr=False)
@@ -186,7 +169,6 @@ class _SpekeContext:
     identity_key: bytes | None = field(default=None, repr=False)
     hmac_key: bytes | None = field(default=None, repr=False)
     data_key: bytes | None = field(default=None, repr=False)
-
 
 def _create_context(pin: bytes, salt: bytes, random_bytes: RandomBytes) -> _SpekeContext:
     if len(salt) != SALT_LENGTH:
@@ -204,7 +186,6 @@ def _create_context(pin: bytes, salt: bytes, random_bytes: RandomBytes) -> _Spek
         private_exponent=private_exponent,
         public_key=public_value.to_bytes(MODP_2048_PUBLIC_KEY_LENGTH, "big"),
     )
-
 
 def _derive_session_keys(context: _SpekeContext, remote_public_key: bytes) -> None:
     if len(remote_public_key) != MODP_2048_PUBLIC_KEY_LENGTH:
@@ -224,7 +205,6 @@ def _derive_session_keys(context: _SpekeContext, remote_public_key: bytes) -> No
     context.identity_key = session_material[:SESSION_KEY_LENGTH]
     context.hmac_key = session_material[SESSION_KEY_LENGTH:]
 
-
 def _derive_data_key(context: _SpekeContext) -> bytes:
     if context.identity_key is None:
         raise SpekeProtocolError("SPEKE session key is unavailable")
@@ -236,12 +216,10 @@ def _derive_data_key(context: _SpekeContext) -> bytes:
     )
     return context.data_key
 
-
 def _key_confirmation(context: _SpekeContext, first: bytes, second: bytes) -> bytes:
     if context.hmac_key is None:
         raise SpekeProtocolError("SPEKE HMAC key is unavailable")
     return hmac.digest(context.hmac_key, first + second, "sha256")
-
 
 class SpekeServer:
     """The locally discovered HiLink gateway side of the observed SPEKE flow."""
@@ -319,93 +297,8 @@ class SpekeServer:
             {"kcfData": _hex(server_confirmation)},
         )
 
-
-class SpekeClient:
-    """A test peer for verifying the gateway-side implementation locally."""
-
-    def __init__(self, pin: str | bytes, *, random_bytes: RandomBytes = _secure_random) -> None:
-        self._pin = _pin_bytes(pin)
-        self._random_bytes = random_bytes
-        self._session_id: str | None = None
-        self._context: _SpekeContext | None = None
-        self._confirmed = False
-
-    @property
-    def established(self) -> bool:
-        return self._confirmed
-
-    @property
-    def data_key(self) -> bytes:
-        if not self._confirmed or self._context is None or self._context.data_key is None:
-            raise SpekeProtocolError("SPEKE session is not confirmed")
-        return self._context.data_key
-
-    def start(self) -> bytes:
-        if self._session_id is not None:
-            raise SpekeProtocolError("SPEKE client session has already started")
-        self._session_id = _hex(_take_random(self._random_bytes, SESSION_ID_LENGTH))
-        return _make_envelope(
-            self._session_id,
-            SPEKE_CLIENT_REQUEST,
-            {
-                "version": _version_payload(),
-                "operationCode": SPEKE_OPERATION_CODE,
-                "support256mod": True,
-            },
-        )
-
-    def process(self, payload: bytes | str) -> bytes | None:
-        session_id, message, inner = _read_envelope(payload)
-        if self._session_id is None or session_id != self._session_id:
-            raise SpekeProtocolError("SPEKE response does not match the active session")
-        if message == SPEKE_SERVER_RESPONSE:
-            return self._process_response(session_id, inner)
-        if message == SPEKE_SERVER_CONFIRM:
-            self._process_confirmation(inner)
-            return None
-        raise SpekeProtocolError(f"unsupported client SPEKE message: {message}")
-
-    def _process_response(self, session_id: str, inner: Mapping[str, object]) -> bytes:
-        if self._context is not None:
-            raise SpekeProtocolError("duplicate SPEKE server response")
-        _require_version(inner)
-        salt = _decode_hex(inner.get("salt"), "salt", SALT_LENGTH)
-        remote_challenge = _decode_hex(inner.get("challenge"), "challenge", CHALLENGE_LENGTH)
-        remote_public_key = _decode_hex(
-            inner.get("epk"), "epk", MODP_2048_PUBLIC_KEY_LENGTH
-        )
-        context = _create_context(self._pin, salt, self._random_bytes)
-        context.remote_challenge = remote_challenge
-        _derive_session_keys(context, remote_public_key)
-        confirmation = _key_confirmation(context, context.local_challenge, remote_challenge)
-        self._context = context
-        return _make_envelope(
-            session_id,
-            SPEKE_CLIENT_CONFIRM,
-            {
-                "challenge": _hex(context.local_challenge),
-                "epk": _hex(context.public_key),
-                "kcfData": _hex(confirmation),
-            },
-        )
-
-    def _process_confirmation(self, inner: Mapping[str, object]) -> None:
-        if self._context is None or self._context.remote_challenge is None:
-            raise SpekeProtocolError("SPEKE server confirmation arrived before its response")
-        confirmation = _decode_hex(inner.get("kcfData"), "kcfData", HMAC_LENGTH)
-        expected = _key_confirmation(
-            self._context,
-            self._context.remote_challenge,
-            self._context.local_challenge,
-        )
-        if not hmac.compare_digest(confirmation, expected):
-            raise SpekeProtocolError("SPEKE server key confirmation failed")
-        _derive_data_key(self._context)
-        self._confirmed = True
-
-
 class CloudSetupCodec:
-    """Support both the captured Base64 envelope and the public raw AES-GCM frame."""
+    """CloudSetup/v2 AES-GCM 载荷编解码器."""
 
     def __init__(self, data_key: bytes, *, random_bytes: RandomBytes = _secure_random) -> None:
         if len(data_key) != SESSION_KEY_LENGTH:
@@ -469,7 +362,6 @@ class CloudSetupCodec:
         encrypted = AESGCM(self._data_key).encrypt(nonce, data, None)
         return bytes([GCM_VERSION]) + nonce + encrypted
 
-
 @dataclass(frozen=True)
 class CloudSetupAuthInfo:
     """The CloudSetup fields accepted by the public device auth-info handler."""
@@ -478,7 +370,6 @@ class CloudSetupAuthInfo:
     auth_code: bytes = field(repr=False)
     auth_code_id: str
     uid_hash: str | None = None
-
 
 @dataclass(frozen=True)
 class CloudSetupBindingInfo:
@@ -489,7 +380,6 @@ class CloudSetupBindingInfo:
     code: str = field(repr=False)
     cloud_primary_url: str = field(repr=False)
     cloud_standby_url: str | None = field(default=None, repr=False)
-
 
 def _cloud_setup_data(plaintext: bytes | str) -> dict[str, object]:
     data = plaintext.encode("utf-8") if isinstance(plaintext, str) else plaintext
@@ -503,9 +393,8 @@ def _cloud_setup_data(plaintext: bytes | str) -> dict[str, object]:
         raise CloudSetupProtocolError("CloudSetup payload is missing data")
     return root["data"]
 
-
 def decode_cloud_setup_binding_info(plaintext: bytes | str) -> CloudSetupBindingInfo:
-    """Parse the captured CloudSetup/v2 binding fields without persisting credentials."""
+    """解析实测的 CloudSetup/v2 Wi-Fi 绑定对象."""
 
     binding = _cloud_setup_data(plaintext)
     dev_id = binding.get("devId")
@@ -537,7 +426,6 @@ def decode_cloud_setup_binding_info(plaintext: bytes | str) -> CloudSetupBinding
         cloud_standby_url=standby_url,
     )
 
-
 def decode_cloud_setup_auth_info(plaintext: bytes | str) -> CloudSetupAuthInfo:
     auth = _cloud_setup_data(plaintext)
     dev_id = auth.get("devId")
@@ -562,21 +450,3 @@ def decode_cloud_setup_auth_info(plaintext: bytes | str) -> CloudSetupAuthInfo:
         auth_code_id=auth_code_id,
         uid_hash=uid_hash,
     )
-
-
-def make_cloud_setup_success_response(codec: CloudSetupCodec) -> bytes:
-    """Return the encrypted observed success body for CloudSetup/v2."""
-
-    return codec.encrypt(_compact_json({"errcode": 0}))
-
-
-def derive_speke_response(server: SpekeServer, request_payload: bytes | str) -> bytes:
-    """Dispatch one observed SPEKE request through a stateful gateway session."""
-
-    return server.process(request_payload)
-
-
-def decrypt_cloud_setup_payload(data_key: bytes, payload: bytes | str) -> bytes:
-    """Decrypt the observed Base64/AES-GCM CloudSetup/v2 transport payload."""
-
-    return CloudSetupCodec(data_key).decrypt(payload)

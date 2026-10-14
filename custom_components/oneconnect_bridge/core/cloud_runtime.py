@@ -1,5 +1,4 @@
-"""Evidence-backed TLS and HiLink cloud-session runtime."""
-
+"""OneConnect Bridge 云端注册与在线会话."""
 from __future__ import annotations
 
 import base64
@@ -35,17 +34,14 @@ from .m2m import (
     build_bridge_grs_request,
     build_bridge_heartbeat_request,
     build_bridge_login_request,
-    build_bridge_revoke_request,
     encode_bridge_message,
 )
 from .speke import CloudSetupBindingInfo
-
 
 _LOGGER = logging.getLogger(__name__)
 
 MAX_PENDING_CHILD_STATE_REQUESTS = 256
 MAX_CHILD_STATE_REQUESTS_PER_TICK = 4
-
 
 class CloudRuntimeError(RuntimeError):
     """A cloud transport or public protocol stage failed."""
@@ -54,14 +50,12 @@ class CloudRuntimeError(RuntimeError):
         super().__init__(message)
         self.errcode = errcode
 
-
 @dataclass(frozen=True)
 class CloudRunResult:
     registered: bool
     stage: str
     errcode: int | None = None
     error: str | None = None
-
 
 @dataclass(frozen=True)
 class OnlineChildCommand:
@@ -71,14 +65,13 @@ class OnlineChildCommand:
     state_requests: tuple[BridgeCloudRequest, ...] = ()
     post_ack: Callable[["CloudM2MClient"], None] | None = None
 
-
 class JsonTrace:
     """Optionally persist a complete cloud trace for an explicit debug run."""
 
     def __init__(self, path: Path | None, *, metadata: dict[str, object]) -> None:
         self.path = path
         self.document: dict[str, object] = {
-            "schema": "hwhomebridge.real-cloud-trace.v1",
+            "schema": "oneconnect_bridge.real-cloud-trace.v1",
             "metadata": metadata,
             "records": [],
         }
@@ -105,10 +98,8 @@ class JsonTrace:
         temporary.replace(self.path)
         self.path.chmod(0o600)
 
-
 def _b64(value: bytes) -> str:
     return base64.b64encode(value).decode("ascii")
-
 
 def _json_object(payload: bytes) -> dict[str, object] | None:
     try:
@@ -116,7 +107,6 @@ def _json_object(payload: bytes) -> dict[str, object] | None:
     except (UnicodeDecodeError, json.JSONDecodeError):
         return None
     return value if isinstance(value, dict) else None
-
 
 def _endpoint(raw_url: str) -> tuple[str, int]:
     value = raw_url.strip()
@@ -128,7 +118,6 @@ def _endpoint(raw_url: str) -> tuple[str, int]:
     except ValueError as error:
         raise CloudRuntimeError("CloudSetup primary URL has an invalid port") from error
     return parsed.hostname, port
-
 
 def normalize_certificate(value: str | bytes) -> str:
     """Return one validated certificate in PEM form."""
@@ -152,7 +141,6 @@ def normalize_certificate(value: str | bytes) -> str:
     except (ValueError, binascii.Error) as error:
         raise CloudRuntimeError("TLS trust store contains no valid PEM/DER certificate") from error
 
-
 def read_ca_certificates(path: Path) -> list[str]:
     """Read and validate all certificates from a trust-store JSON file."""
 
@@ -167,12 +155,10 @@ def read_ca_certificates(path: Path) -> list[str]:
     except (UnicodeEncodeError, ValueError, binascii.Error) as error:
         raise CloudRuntimeError("TLS trust JSON contains an invalid certificate") from error
 
-
 def _read_ca_json(path: Path | None) -> str | None:
     if path is None:
         return None
     return "\n".join(read_ca_certificates(path))
-
 
 class CloudM2MClient:
     """Run the observed bridge registration or bound online session over TLS."""
@@ -448,7 +434,7 @@ class CloudM2MClient:
         if not isinstance(refresh_token, str) or not refresh_token:
             raise CloudRuntimeError("login response is missing refreshToken")
         state = {
-            "schema": "hwhomebridge.bridge-cloud-state.v1",
+            "schema": "oneconnect_bridge.bridge-cloud-state.v1",
             "devId": dev_id,
             "secret": secret,
             "accessToken": access_token,
@@ -518,72 +504,6 @@ class CloudM2MClient:
                     self._socket.close()
                 finally:
                     self._socket = None
-
-    def revoke_bound(self, state: dict[str, object]) -> None:
-        """Revoke a bound parent gateway before local material is removed."""
-
-        try:
-            self._run_revoke_bound(state)
-        except Exception as error:  # noqa: BLE001 - caller decides local cleanup
-            self.trace.record(
-                "cloud_revoke_failed",
-                stage=self._stage,
-                error_type=type(error).__name__,
-                error=str(error),
-            )
-            if isinstance(error, CloudRuntimeError):
-                raise
-            raise CloudRuntimeError(f"{type(error).__name__}: {error}") from error
-        finally:
-            if self._socket is not None:
-                try:
-                    self._socket.close()
-                finally:
-                    self._socket = None
-
-    def _run_revoke_bound(self, state: dict[str, object]) -> None:
-        dev_id = state.get("devId")
-        secret = state.get("secret")
-        if not isinstance(dev_id, str) or not dev_id:
-            raise CloudRuntimeError("registered cloud state has no devId")
-        if not isinstance(secret, str) or not secret:
-            raise CloudRuntimeError("registered cloud state has no secret")
-        if not self.cloud_primary_url:
-            raise CloudRuntimeError("registered cloud state has no primary URL")
-
-        self._active_dev_id = dev_id
-        self._stage = "tls_connect"
-        self._connect()
-
-        self._stage = "login_for_revoke"
-        login = build_bridge_login_request(
-            dev_id=dev_id,
-            secret=secret,
-            token=secrets.token_bytes(2),
-        )
-        login_json = self._request("login_for_revoke", login)
-        if self._require_errcode(login_json, "login_for_revoke") != 0:
-            raise CloudRuntimeError("cloud re-login for revoke was rejected")
-        access_token = login_json.get("accessToken")
-        if not isinstance(access_token, str) or not access_token:
-            raise CloudRuntimeError("login response is missing accessToken")
-
-        self._stage = "revoke"
-        revoke = build_bridge_revoke_request(
-            access_token=access_token,
-            token=secrets.token_bytes(2),
-            sequence_number=2,
-        )
-        response = self._request("revoke", revoke, require_json=False)
-        errcode = response.get("errcode")
-        # The revoke callback ignores the body; errcode 6 means the device is already absent.
-        if isinstance(errcode, int) and errcode not in (0, 6):
-            raise CloudRuntimeError(f"cloud revoke errcode {errcode}")
-        self.trace.record(
-            "cloud_revoke_accepted",
-            errcode=errcode,
-            response_keys=sorted(response),
-        )
 
     def _run_bound(self, state: dict[str, object], stop_event: Event) -> CloudRunResult:
         dev_id = state.get("devId")
@@ -767,7 +687,7 @@ class CloudM2MClient:
         self._heartbeat_misses = 0
         next_heartbeat = time.monotonic() + period
 
-        # Match the C SDK by reading inbound commands independently from periodic heartbeat writes.
+        # 与 C SDK 相同：命令在 socket 可读时立即消费，心跳仅为周期性出站任务
         while not stop_event.is_set():
             if self.on_worker_tick is not None:
                 self.on_worker_tick(self)
@@ -933,7 +853,7 @@ class CloudM2MClient:
             if isinstance(stored, dict):
                 material.update(stored)
 
-        material["schema"] = "hwhomebridge-python.cloud-material.v2"
+        material["schema"] = "oneconnect_bridge.cloud-material.v2"
         for key in ("devId", "secret", "psk", "code", "cloudPrimaryUrl", "cloudStandbyUrl"):
             if key in updates and updates[key] is not None:
                 material[key] = updates[key]
@@ -956,7 +876,8 @@ class CloudM2MClient:
             ca_data = _read_ca_json(self.ca_json)
             if ca_data is not None:
                 context.load_verify_locations(cadata=ca_data)
-                # Use partial-chain verification because Huawei sends the intermediate chain without the public root.
+                # 华为端只发叶子+中间证书、不发公共根：以实测中间证书为
+                # partial-chain 信任锚；主机名与叶子签名校验保持开启
                 partial_chain = getattr(ssl, "VERIFY_X509_PARTIAL_CHAIN", 0)
                 if partial_chain:
                     context.verify_flags |= partial_chain
@@ -1186,7 +1107,7 @@ class CloudM2MClient:
 
                     Thread(
                         target=run_post_ack,
-                        name="oneconnect-bridge-child-post-ack",
+                        name="oneconnect_bridge-child-post-ack",
                         daemon=True,
                     ).start()
                 return True

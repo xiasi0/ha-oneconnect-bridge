@@ -1,10 +1,8 @@
-"""Implement only the captured CoAP discovery subset; SPEKE is handled separately."""
-
+"""OneConnect Bridge CoAP 发现."""
 from __future__ import annotations
 
 from dataclasses import dataclass
 import json
-
 
 COAP_VERSION = 1
 COAP_GET = 0x01
@@ -17,13 +15,11 @@ URI_PATH = 11
 URI_QUERY = 15
 PAYLOAD_MARKER = 0xFF
 
-# Keep the older cloudSetup spelling as a compatibility path for the captured exchange.
+# 公开实现与实机冒烟均用此发现选择符；保留旧 cloudSetup 拼写兼容历史抓包
 CLOUD_SETUP_DISCOVERY_VALUES = frozenset(("ohCloudSetup", "cloudSetup"))
-
 
 class CoapProtocolError(ValueError):
     """Raised when a packet falls outside the small CoAP subset we model."""
-
 
 @dataclass(frozen=True)
 class CoapOption:
@@ -36,7 +32,6 @@ class CoapOption:
 
     def as_text(self) -> str:
         return self.value.decode("utf-8")
-
 
 @dataclass(frozen=True)
 class CoapMessage:
@@ -143,7 +138,6 @@ class CoapMessage:
             result[key] = value if separator else ""
         return result
 
-
 @dataclass(frozen=True)
 class ServiceDescriptor:
     service_type: str
@@ -151,7 +145,6 @@ class ServiceDescriptor:
 
     def as_payload(self) -> dict[str, str]:
         return {"st": self.service_type, "sid": self.service_id}
-
 
 @dataclass(frozen=True)
 class DeviceDescriptor:
@@ -186,7 +179,7 @@ class DeviceDescriptor:
         if request.message_type != COAP_NON_CONFIRMABLE:
             raise NotImplementedError("only the observed non-confirmable discovery request is modelled")
         payload = self._observed_cloud_setup_json().encode("utf-8")
-        # Callers supply the response message ID because its allocation policy is not recovered.
+        # 实测应答 message id 与请求不同且分配策略未知，由调用方提供
         return CoapMessage(
             message_type=COAP_NON_CONFIRMABLE,
             code=COAP_CONTENT,
@@ -196,13 +189,12 @@ class DeviceDescriptor:
         )
 
     def _observed_cloud_setup_json(self) -> str:
-        """Preserve the captured one-space JSON layout because the SDK exchange is length-sensitive."""
+        """按抓包实锤序列化 JSON 空白：devInfo/services 逗号后含一个空格（265 字节载荷的兼容事实，非排版偏好)."""
 
         payload = self.unbound_cloud_setup_payload()
         device_info = json.dumps(payload["devInfo"], separators=(",", ":"), ensure_ascii=False)
         services = json.dumps(payload["services"], separators=(",", ":"), ensure_ascii=False)
         return f'{{"errcode":0,"devId":"","devInfo":{device_info}, "services":{services}}}'
-
 
 def is_cloud_setup_request(message: CoapMessage) -> bool:
     return (
@@ -210,7 +202,6 @@ def is_cloud_setup_request(message: CoapMessage) -> bool:
         and message.path == ".well-known/core"
         and message.query.get("st") in CLOUD_SETUP_DISCOVERY_VALUES
     )
-
 
 def _decode_extended(nibble: int, packet: bytes, index: int) -> tuple[int, int]:
     if nibble < 13:
@@ -224,7 +215,6 @@ def _decode_extended(nibble: int, packet: bytes, index: int) -> tuple[int, int]:
             raise CoapProtocolError("missing two-byte extended option value")
         return int.from_bytes(packet[index : index + 2], "big") + 269, index + 2
     raise CoapProtocolError("reserved option nibble")
-
 
 def _encode_extended(value: int) -> tuple[int, bytes]:
     if value < 0:
