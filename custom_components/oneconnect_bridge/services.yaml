@@ -1,0 +1,11 @@
+start_pairing:
+  name: Start gateway pairing
+  description: Start the local 5683 pairing session for one Python gateway.
+  fields:
+    serial:
+      name: Gateway serial
+      description: The parent gateway serial shown by the integration.
+      required: true
+      example: A9D570DF45C8B7F5
+      selector:
+        text:
