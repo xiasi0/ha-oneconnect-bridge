@@ -1,34 +1,48 @@
+"""OneConnect Bridge 网关连接状态实体."""
 from __future__ import annotations
 
-from homeassistant.components.binary_sensor import BinarySensorDeviceClass, BinarySensorEntity
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.components.binary_sensor import (
+    BinarySensorDeviceClass,
+    BinarySensorEntity,
+    BinarySensorEntityDescription,
+)
 from homeassistant.core import HomeAssistant
 
-from .const import DOMAIN
+from . import HhbConfigEntry
+from .const import GATEWAY_STATUS_ONLINE
 from .entity import GatewayEntity
 from .gateway import GatewayRuntime
 
+GATEWAY_BINARY_SENSORS: tuple[BinarySensorEntityDescription, ...] = (
+    BinarySensorEntityDescription(
+        key="online",
+        translation_key="online",
+        device_class=BinarySensorDeviceClass.CONNECTIVITY,
+    ),
+)
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: HhbConfigEntry,
     async_add_entities,
 ) -> None:
-    runtime: GatewayRuntime = hass.data[DOMAIN]["runtimes"][entry.entry_id]
-    async_add_entities([GatewayOnlineEntity(runtime)])
+    runtime = entry.runtime_data.runtime
+    async_add_entities(
+        GatewayOnlineEntity(description, runtime) for description in GATEWAY_BINARY_SENSORS
+    )
 
 
 class GatewayOnlineEntity(GatewayEntity, BinarySensorEntity):
-    _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
-    _attr_translation_key = "online"
+    """Expose the cloud online state of the parent gateway."""
 
-    def __init__(self, runtime: GatewayRuntime) -> None:
+    def __init__(self, description: BinarySensorEntityDescription, runtime: GatewayRuntime) -> None:
         super().__init__(runtime)
-        self._attr_unique_id = f"{runtime.serial}_online"
+        self.entity_description = description
+        self._attr_unique_id = f"{runtime.serial}_{description.key}"
 
     @property
     def is_on(self) -> bool:
-        return self.runtime.status == "online"
+        return self.runtime.status == GATEWAY_STATUS_ONLINE
 
     @property
     def extra_state_attributes(self) -> dict[str, str]:

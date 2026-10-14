@@ -197,3 +197,4 @@ products:
     description: "RGBCW 调光调色照明驱动（开关、亮度、色温、颜色）"
     protocol_type: 5
     setup_type: 0
+

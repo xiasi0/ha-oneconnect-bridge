@@ -1,3 +1,4 @@
+"""OneConnect Bridge 实体基类."""
 from __future__ import annotations
 
 from homeassistant.helpers.entity import DeviceInfo, Entity
@@ -5,8 +6,9 @@ from homeassistant.helpers.entity import DeviceInfo, Entity
 from .const import DOMAIN
 from .gateway import GatewayRuntime
 
-
 class GatewayEntity(Entity):
+    """Base entity bound to one Python gateway instance."""
+
     _attr_has_entity_name = True
 
     def __init__(self, runtime: GatewayRuntime) -> None:
@@ -18,10 +20,10 @@ class GatewayEntity(Entity):
         info = self.runtime.device_info
         return DeviceInfo(
             identifiers={(DOMAIN, self.runtime.serial)},
+            name=info["name"],
             manufacturer=info["manufacturer"],
             model=info["model"],
             serial_number=self.runtime.serial,
-            translation_key="gateway",
         )
 
     async def async_added_to_hass(self) -> None:

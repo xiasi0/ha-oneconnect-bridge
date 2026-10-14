@@ -1,3 +1,4 @@
+"""OneConnect Bridge 每网关持久化存储."""
 from __future__ import annotations
 
 import json
@@ -6,8 +7,9 @@ from pathlib import Path
 import shutil
 from typing import Any
 
-from .const import DOMAIN
+import yaml
 
+from .const import MAPPING_FILENAME
 
 class GatewayStore:
     """Store runtime material below HA's .storage directory."""
@@ -17,7 +19,7 @@ class GatewayStore:
             raise ValueError("gateway serial contains an unsafe path character")
         self._serial = serial
         self._gateways_root = (
-            Path(config_dir) / ".storage" / DOMAIN / "gateways"
+            Path(config_dir) / ".storage" / "oneconnect_bridge" / "gateways"
         )
         self.root = self._gateways_root / serial
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -72,16 +74,15 @@ class GatewayStore:
         os.chmod(path, 0o600)
         return path
 
-    def ensure_mapping_file(self, source: Path) -> Path:
-        """Copy the bundled sample mapping once into this gateway scope."""
+    def write_mapping(self, document: dict[str, Any]) -> Path:
+        """Atomically replace this gateway's UI-managed mapping document."""
 
-        target = self.path("mapping.yaml")
-        if target.is_file():
-            return target
-        if not source.is_file():
-            raise FileNotFoundError(source)
+        target = self.path(MAPPING_FILENAME)
         temporary = target.with_suffix(target.suffix + ".tmp")
-        temporary.write_bytes(source.read_bytes())
+        temporary.write_text(
+            yaml.safe_dump(document, allow_unicode=True, sort_keys=False) + "\n",
+            encoding="utf-8",
+        )
         os.chmod(temporary, 0o600)
         temporary.replace(target)
         os.chmod(target, 0o600)

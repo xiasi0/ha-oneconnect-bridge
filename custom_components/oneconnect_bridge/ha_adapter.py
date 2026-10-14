@@ -1,3 +1,4 @@
+"""OneConnect Bridge HA 适配层（云线程与 HA 事件循环间的同步桥）."""
 from __future__ import annotations
 
 import asyncio
@@ -9,9 +10,7 @@ from homeassistant.helpers.event import async_call_later, async_track_state_chan
 
 from .business.models import BindingField, ChildPlan
 
-
 _LOGGER = logging.getLogger(__name__)
-
 
 class HAEntityBridge:
     """Read/call HA entities from the gateway's non-event-loop worker."""
@@ -42,7 +41,6 @@ class HAEntityBridge:
             binding.entity_id
             for child in plan.children
             for binding in child.bindings
-            if binding.entity_id
         }
         if not entity_ids:
             return lambda: None
@@ -68,9 +66,12 @@ class HAEntityBridge:
 
         remaining = attempts
         cancel_handle = None
+        cancelled = False
 
         async def retry(_now) -> None:
             nonlocal remaining, cancel_handle
+            if cancelled:
+                return
             pending = False
             for child in plan.children:
                 snapshot = await self._async_read_child_state(child)
@@ -91,6 +92,9 @@ class HAEntityBridge:
         cancel_handle = async_call_later(self._hass, 2, retry)
 
         def cancel() -> None:
+            nonlocal cancelled
+            # 防止进行中的 retry 在句柄取消后又排一次 async_call_later
+            cancelled = True
             if cancel_handle is not None:
                 cancel_handle()
 
@@ -105,15 +109,10 @@ class HAEntityBridge:
     ) -> dict[str, dict[str, object]]:
         result: dict[str, dict[str, object]] = {}
         for binding in child.bindings:
-            if binding.source in {"constant", "command"}:
-                value = _read_binding_value("", {}, binding)
-                state_value = f"<{binding.source}>"
-            else:
-                state = self._hass.states.get(binding.entity_id)
-                if state is None or state.state in {"unknown", "unavailable"}:
-                    continue
-                state_value = state.state
-                value = _read_binding_value(state.state, state.attributes, binding)
+            state = self._hass.states.get(binding.entity_id)
+            if state is None or state.state in {"unknown", "unavailable"}:
+                continue
+            value = _read_binding_value(state.state, state.attributes, binding)
             _LOGGER.debug(
                 "HA binding read child=%s sid=%s field=%s entity=%s "
                 "state=%s attribute=%s converted=%s",
@@ -121,7 +120,7 @@ class HAEntityBridge:
                 binding.service_id,
                 binding.field_name,
                 binding.entity_id,
-                state_value,
+                state.state,
                 binding.attribute,
                 value,
             )
@@ -137,28 +136,17 @@ class HAEntityBridge:
         for binding in bindings:
             if binding.field_name not in payload:
                 continue
-            value = _map_huawei_value(binding, payload[binding.field_name])
-            await _call_binding(self._hass, binding, value)
-
+            await _call_binding(self._hass, binding, payload[binding.field_name])
 
 def _read_binding_value(
     state_value: str, attributes: dict[str, Any], binding: BindingField
 ) -> object | None:
-    if binding.source == "constant":
-        value: object = binding.value
-    elif binding.source == "command":
-        return None
-    elif binding.source == "state":
+    if binding.source == "state":
         value: object = state_value
     elif binding.source == "attribute" and binding.attribute:
         value = attributes.get(binding.attribute)
     else:
         return None
-    if binding.component is not None:
-        if not isinstance(value, (tuple, list)) or len(value) < 3:
-            return None
-        component_index = {"red": 0, "green": 1, "blue": 2}[binding.component]
-        value = value[component_index]
     mapping = binding.ha_to_huawei.get("map")
     if isinstance(mapping, dict):
         value = mapping.get(str(value), value)
@@ -166,25 +154,14 @@ def _read_binding_value(
         return max(0, min(100, round(float(value) * 100 / 255)))
     return value
 
-
-def _map_huawei_value(binding: BindingField, value: object) -> object:
-    mapping = binding.huawei_to_ha.get("map")
-    if isinstance(mapping, dict):
-        return mapping.get(str(value), value)
-    return value
-
-
 async def _call_binding(
     hass: HomeAssistant, binding: BindingField, value: object
 ) -> None:
-    if not binding.entity_id:
-        return
     domain, _separator, _object_id = binding.entity_id.partition(".")
     if not domain or not _object_id:
         return
     if binding.field_name == "on":
-        is_on = value not in (None, False, 0, "0", "off", "false")
-        service = "turn_on" if is_on else "turn_off"
+        service = "turn_on" if bool(value) else "turn_off"
         _LOGGER.debug(
             "Calling HA service %s.%s entity=%s value=%s",
             domain,
@@ -212,91 +189,26 @@ async def _call_binding(
         )
         return
     if binding.field_name == "colorTemperature":
+        kelvin = int(value)
+        # 华为侧色温范围由产品档案声明，可能与具体灯的能力不符；
+        # 收敛到实体声明的支持范围，避免 HA 服务校验直接拒绝
+        state = hass.states.get(binding.entity_id)
+        attributes = state.attributes if state is not None else {}
+        min_kelvin = attributes.get("min_color_temp_kelvin")
+        max_kelvin = attributes.get("max_color_temp_kelvin")
+        if isinstance(min_kelvin, (int, float)) and kelvin < min_kelvin:
+            kelvin = int(min_kelvin)
+        if isinstance(max_kelvin, (int, float)) and kelvin > max_kelvin:
+            kelvin = int(max_kelvin)
         _LOGGER.debug(
             "Calling HA service %s.turn_on entity=%s color_temp_kelvin=%s",
             domain,
             binding.entity_id,
-            value,
+            kelvin,
         )
         await hass.services.async_call(
             domain,
             "turn_on",
-            {"entity_id": binding.entity_id, "color_temp_kelvin": int(value)},
-            blocking=True,
-        )
-        return
-    if domain == "climate" and binding.field_name == "mode":
-        _LOGGER.debug(
-            "Calling climate.set_hvac_mode entity=%s hvac_mode=%s",
-            binding.entity_id,
-            value,
-        )
-        await hass.services.async_call(
-            "climate",
-            "set_hvac_mode",
-            {"entity_id": binding.entity_id, "hvac_mode": str(value)},
-            blocking=True,
-        )
-        return
-    if domain == "climate" and binding.field_name == "target":
-        _LOGGER.debug(
-            "Calling climate.set_temperature entity=%s temperature=%s",
-            binding.entity_id,
-            value,
-        )
-        await hass.services.async_call(
-            "climate",
-            "set_temperature",
-            {"entity_id": binding.entity_id, "temperature": float(value)},
-            blocking=True,
-        )
-        return
-    if domain == "cover" and binding.field_name == "action":
-        services = {0: "close_cover", 1: "open_cover", 2: "stop_cover"}
-        service = services.get(int(value))
-        if service is None:
-            return
-        _LOGGER.debug(
-            "Calling cover.%s entity=%s action=%s",
-            service,
-            binding.entity_id,
-            value,
-        )
-        await hass.services.async_call(
-            "cover",
-            service,
-            {"entity_id": binding.entity_id},
-            blocking=True,
-        )
-        return
-    if domain == "cover" and binding.field_name == "target":
-        _LOGGER.debug(
-            "Calling cover.set_cover_position entity=%s position=%s",
-            binding.entity_id,
-            value,
-        )
-        await hass.services.async_call(
-            "cover",
-            "set_cover_position",
-            {"entity_id": binding.entity_id, "position": int(value)},
-            blocking=True,
-        )
-        return
-    if binding.field_name in {"red", "green", "blue"}:
-        state = hass.states.get(binding.entity_id)
-        current = state.attributes.get("rgb_color") if state is not None else None
-        rgb = list(current) if isinstance(current, (tuple, list)) and len(current) >= 3 else [0, 0, 0]
-        component_index = {"red": 0, "green": 1, "blue": 2}[binding.field_name]
-        rgb[component_index] = max(0, min(255, int(value)))
-        _LOGGER.debug(
-            "Calling HA service %s.turn_on entity=%s rgb_color=%s",
-            domain,
-            binding.entity_id,
-            rgb,
-        )
-        await hass.services.async_call(
-            domain,
-            "turn_on",
-            {"entity_id": binding.entity_id, "rgb_color": tuple(rgb)},
+            {"entity_id": binding.entity_id, "color_temp_kelvin": kelvin},
             blocking=True,
         )

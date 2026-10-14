@@ -1,3 +1,4 @@
+"""OneConnect Bridge 网关运行时与配对代理."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -20,7 +21,14 @@ from .const import (
     DEFAULT_PROTOCOL_TYPE,
     DISCOVERY_MULTICAST,
     DISCOVERY_PORT,
+    GATEWAY_DEVICE_TYPE_NAME,
     GATEWAY_MANUFACTURER,
+    GATEWAY_NAME,
+    GATEWAY_STATUS_ERROR,
+    GATEWAY_STATUS_OFFLINE,
+    GATEWAY_STATUS_ONLINE,
+    GATEWAY_STATUS_PAIRING,
+    GATEWAY_STATUS_REGISTERING,
     MAX_GATEWAY_INSTANCES,
     PIN_TTL_SECONDS,
     VIRTUAL_HARDWARE_VERSION,
@@ -37,7 +45,6 @@ from .core.pairing_runtime import LocalPairingResponder, PairingResult
 from .core.speke import CloudSetupAuthInfo, CloudSetupBindingInfo
 from .storage import GatewayStore
 
-
 HUAWEI_ROOT_CA_URL = (
     "https://h5hosting-drcn.dbankcdn.cn/cch5/crl/pki_CA_RootCa/RootCa.cer"
 )
@@ -47,7 +54,6 @@ RECONNECT_INITIAL_DELAY_SECONDS = 5.0
 RECONNECT_MAX_DELAY_SECONDS = 600.0
 TERMINAL_CLOUD_ERRCODES = frozenset({3, 5, 6})
 
-
 def _read_integration_version() -> str:
     """Read the installed integration version from its manifest."""
 
@@ -56,7 +62,6 @@ def _read_integration_version() -> str:
     if not isinstance(version, str) or not version.strip():
         raise ValueError("manifest.json has no valid integration version")
     return version.strip()
-
 
 @dataclass(frozen=True)
 class GatewayConfig:
@@ -72,14 +77,8 @@ class GatewayConfig:
     model: str = DEFAULT_MODEL
     protocol_type: int = DEFAULT_PROTOCOL_TYPE
 
-
 class PairingBusyError(RuntimeError):
     """Raised when another gateway already owns the local pairing listener."""
-
-
-class GatewayLimitError(RuntimeError):
-    """Raised when the fixed gateway instance limit would be exceeded."""
-
 
 class PairingBroker:
     """Own the single local UDP 5683 listener used by active pairing."""
@@ -101,7 +100,7 @@ class PairingBroker:
             self._stop.clear()
             self._thread = threading.Thread(
                 target=self._run,
-                name=f"oneconnect-bridge-pairing-{runtime.serial}",
+                name=f"oneconnect_bridge-pairing-{runtime.serial}",
                 daemon=True,
             )
             self._thread.start()
@@ -151,14 +150,23 @@ class PairingBroker:
                 try:
                     packet, remote = sock.recvfrom(16384)
                 except TimeoutError:
-                    if runtime.pairing_expired:
+                    # PIN 过期但 App 已建立 SPEKE 会话时不得杀监听：CloudSetup 尚未到达
+                    if runtime.pairing_expired and not runtime.pairing_in_progress:
+                        _LOGGER.debug("Gateway %s pairing PIN expired", runtime.serial)
                         runtime.on_pairing_expired()
                         break
                     continue
                 except OSError:
                     break
 
-                response, _ = runtime.handle_pairing_datagram(packet, remote[0])
+                response, result = runtime.handle_pairing_datagram(packet, remote[0])
+                _LOGGER.debug(
+                    "Gateway %s pairing packet from %s len=%s kind=%s",
+                    runtime.serial,
+                    remote[0],
+                    len(packet),
+                    result.kind,
+                )
                 if response is not None:
                     try:
                         sock.sendto(response, remote)
@@ -166,6 +174,7 @@ class PairingBroker:
                         break
                 if runtime.consume_pairing_complete():
                     pairing_complete = True
+                    _LOGGER.debug("Gateway %s pairing complete", runtime.serial)
                     break
         except Exception as error:  # noqa: BLE001 - surfaced through gateway status
             runtime.on_pairing_error(error)
@@ -185,7 +194,6 @@ class PairingBroker:
                 runtime.on_pairing_listener_stopped()
                 runtime.start_cloud_from_binding()
 
-
 class GatewayRuntime:
     """Runtime for one independently identified Huawei parent gateway."""
 
@@ -196,7 +204,7 @@ class GatewayRuntime:
         self.broker = broker
         self._lock = threading.RLock()
         self._listeners: list[Callable[[], None]] = []
-        self._status = "offline"
+        self._status = GATEWAY_STATUS_OFFLINE
         self._pin: str | None = None
         self._pin_expires_at = 0.0
         self._pairing_complete_pending = False
@@ -207,7 +215,6 @@ class GatewayRuntime:
         self._stopped = False
         self._child_manager: ChildManager | None = None
         self._entity_bridge = None
-        self._plan: GatewayPlan | None = None
         self._active_client: CloudM2MClient | None = None
         self._integration_version = ""
         self._reload_queue: Queue[dict[str, object]] = Queue()
@@ -215,19 +222,18 @@ class GatewayRuntime:
     def set_gateway_plan(self, plan: GatewayPlan | None) -> None:
         """Attach the compiled child plan for this gateway instance."""
 
-        self._plan = plan
         self._child_manager = (
             ChildManager(self.store, plan) if plan is not None else None
         )
         if self._child_manager is not None and self._entity_bridge is not None:
             self._child_manager.set_entity_bridge(self._entity_bridge)
-        self._notify()
 
     @property
     def child_count(self) -> int:
         """Return the number of child-device entries in the active plan."""
 
-        plan = self._plan
+        manager = self._child_manager
+        plan = manager.plan if manager is not None else None
         return len(plan.children) if plan is not None else 0
 
     def reload_plan(self, plan: GatewayPlan | None, *, timeout: float = 120.0) -> None:
@@ -268,13 +274,20 @@ class GatewayRuntime:
                     access_token = client.online_access_token
                     if access_token is None:
                         raise RuntimeError("parent cloud session has no access token")
+                    # 单 child 注册失败由 ChildManager 容错记录（error 日志）；
+                    # 整体仍采纳新 plan——否则 mapping 落盘与 runtime 永久不一致，
+                    # 后续任何 reload（含从 UI 删除坏 child）都会重复失败死锁
                     if not new_manager.register_on_session(
                         client,
                         access_token,
                         integration_version=self._integration_version,
                         hardware_version=VIRTUAL_HARDWARE_VERSION,
                     ):
-                        raise RuntimeError("one or more child operations failed")
+                        _LOGGER.warning(
+                            "Gateway %s child mapping applied with registration failures "
+                            "(see child error logs)",
+                            self.serial,
+                        )
                 else:
                     access_token = client.online_access_token
                     if access_token is None:
@@ -283,8 +296,6 @@ class GatewayRuntime:
                 if old_manager is not None:
                     old_manager.prune_removed_children(client, access_token, plan)
                 self._child_manager = new_manager
-                self._plan = plan
-                self._notify()
                 _LOGGER.info("Gateway %s child mapping reload completed", self.serial)
             except Exception as error:  # noqa: BLE001 - preserve old plan
                 client.on_child_command = old_callback
@@ -325,6 +336,13 @@ class GatewayRuntime:
             return bool(self._pin and time.monotonic() >= self._pin_expires_at)
 
     @property
+    def pairing_in_progress(self) -> bool:
+        """App 已通过 PIN 开始 SPEKE 会话；此时 PIN 过期也不得中断配对."""
+        with self._lock:
+            responder = self._pairing_responder
+        return responder is not None and responder.has_active_session
+
+    @property
     def descriptor(self) -> DeviceDescriptor:
         return DeviceDescriptor(
             serial_number=self.serial,
@@ -343,8 +361,10 @@ class GatewayRuntime:
     @property
     def device_info(self) -> dict[str, str]:
         return {
+            "name": GATEWAY_NAME,
             "manufacturer": GATEWAY_MANUFACTURER,
             "model": self.config.model,
+            "device_type": GATEWAY_DEVICE_TYPE_NAME,
             "product_id": self.config.product_id,
         }
 
@@ -408,11 +428,11 @@ class GatewayRuntime:
         if self._stopped:
             self._stopped = False
         self._create_pairing_ticket()
-        self._set_status("pairing")
+        self._set_status(GATEWAY_STATUS_PAIRING)
         try:
             self.broker.register(self)
         except PairingBusyError as error:
-            self._set_status("error", str(error))
+            self._set_status(GATEWAY_STATUS_ERROR, str(error))
 
     def stop(self) -> None:
         self._stopped = True
@@ -422,7 +442,7 @@ class GatewayRuntime:
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=10.0)
         self._clear_pairing_ticket()
-        self._set_status("offline")
+        self._set_status(GATEWAY_STATUS_OFFLINE)
 
     def handle_pairing_datagram(
         self, packet: bytes, peer_host: str
@@ -439,11 +459,11 @@ class GatewayRuntime:
         self._notify()
 
     def on_pairing_error(self, error: Exception) -> None:
-        self._set_status("error", f"pairing listener: {error}")
+        self._set_status(GATEWAY_STATUS_ERROR, f"pairing listener: {error}")
 
     def on_pairing_expired(self) -> None:
         self._clear_pairing_ticket()
-        self._set_status("offline", "pairing PIN expired")
+        self._set_status(GATEWAY_STATUS_OFFLINE, "pairing PIN expired")
 
     def consume_pairing_complete(self) -> bool:
         with self._lock:
@@ -453,7 +473,7 @@ class GatewayRuntime:
 
     def start_cloud_from_binding(self) -> None:
         if self._binding is None:
-            self._set_status("error", "CloudSetup binding material is missing")
+            self._set_status(GATEWAY_STATUS_ERROR, "CloudSetup binding material is missing")
             return
         self._start_cloud(bound_state=None, binding=self._binding)
 
@@ -471,13 +491,13 @@ class GatewayRuntime:
                 return
             self._cloud_stop.clear()
         self._clear_pairing_ticket()
-        self._set_status("registering")
+        self._set_status(GATEWAY_STATUS_REGISTERING)
 
         def worker() -> None:
             try:
                 integration_version = _read_integration_version()
             except Exception as error:  # noqa: BLE001 - surfaced as gateway state
-                self._set_status("error", f"invalid integration manifest: {error}")
+                self._set_status(GATEWAY_STATUS_ERROR, f"invalid integration manifest: {error}")
                 return
             self._integration_version = integration_version
             reconnect_delay = RECONNECT_INITIAL_DELAY_SECONDS
@@ -492,7 +512,7 @@ class GatewayRuntime:
                     mac=self.config.mac,
                     interface_ip=self.config.interface_ip,
                     material_path=self.store.path("cloud/material.json"),
-                    on_online=lambda: self._set_status("online"),
+                    on_online=lambda: self._set_status(GATEWAY_STATUS_ONLINE),
                     on_cloud_ready=lambda ready_client, access_token: self._on_cloud_ready(
                         ready_client,
                         access_token,
@@ -526,10 +546,10 @@ class GatewayRuntime:
                     result = client.run_bound(session_state, self._cloud_stop)
                 self._active_client = None
                 if self._cloud_stop.is_set():
-                    self._set_status("offline")
+                    self._set_status(GATEWAY_STATUS_OFFLINE)
                     break
                 if result.registered:
-                    self._set_status("online")
+                    self._set_status(GATEWAY_STATUS_ONLINE)
                     break
 
                 if bound_state is None:
@@ -540,7 +560,8 @@ class GatewayRuntime:
                         result.error,
                     )
                     self._set_status(
-                        "error", result.error or f"cloud stage {result.stage}"
+                        GATEWAY_STATUS_ERROR,
+                        result.error or f"cloud stage {result.stage}",
                     )
                     break
 
@@ -554,7 +575,8 @@ class GatewayRuntime:
                         result.error,
                     )
                     self._set_status(
-                        "error", result.error or f"cloud errcode {result.errcode}"
+                        GATEWAY_STATUS_ERROR,
+                        result.error or f"cloud errcode {result.errcode}",
                     )
                     break
 
@@ -565,9 +587,9 @@ class GatewayRuntime:
                     reconnect_delay,
                     result.error,
                 )
-                self._set_status("offline")
+                self._set_status(GATEWAY_STATUS_OFFLINE)
                 if self._cloud_stop.wait(reconnect_delay):
-                    self._set_status("offline")
+                    self._set_status(GATEWAY_STATUS_OFFLINE)
                     break
                 reconnect_delay = min(
                     reconnect_delay * 2,
@@ -576,7 +598,7 @@ class GatewayRuntime:
 
         self._cloud_thread = threading.Thread(
             target=worker,
-            name=f"oneconnect-bridge-cloud-{self.serial}",
+            name=f"oneconnect_bridge-cloud-{self.serial}",
             daemon=True,
         )
         self._cloud_thread.start()
@@ -626,13 +648,14 @@ class GatewayRuntime:
     ) -> None:
         del encrypted_request, plaintext
         if not isinstance(info, CloudSetupBindingInfo):
-            self._set_status("error", "CloudSetup returned auth-only material")
+            self._set_status(GATEWAY_STATUS_ERROR, "CloudSetup returned auth-only material")
             return
         self._binding = info
+        _LOGGER.debug("Gateway %s received CloudSetup binding for devId %s", self.serial, info.dev_id)
         self.store.write_json(
             "cloud/material.json",
             {
-                "schema": "hwhomebridge-python.cloud-material.v2",
+                "schema": "oneconnect_bridge.cloud-material.v2",
                 "devId": info.dev_id,
                 "psk": info.psk.hex().upper(),
                 "code": info.code,
@@ -662,6 +685,9 @@ class GatewayRuntime:
         except (KeyError, ValueError, TypeError):
             return None
 
+class GatewayLimitError(RuntimeError):
+    """网关实例数达到固定上限时抛出."""
+
 
 class GatewayManager:
     """Own all configured gateway instances in one HA process."""
@@ -688,7 +714,6 @@ class GatewayManager:
     def get(self, serial: str) -> GatewayRuntime | None:
         return self._runtimes.get(serial)
 
-
 def _ensure_huawei_trust_store(store: GatewayStore) -> Path | None:
     path = store.path("certificates/huawei_root_ca_trust.json")
     if path.is_file():
@@ -708,7 +733,7 @@ def _ensure_huawei_trust_store(store: GatewayStore) -> Path | None:
         store.write_json(
             "certificates/huawei_root_ca_trust.json",
             {
-                "schema": "hwhomebridge-python.tls-trust.v1",
+                "schema": "oneconnect_bridge.tls-trust.v1",
                 "certificate_url": HUAWEI_ROOT_CA_URL,
                 "certificates": [certificate],
             },
