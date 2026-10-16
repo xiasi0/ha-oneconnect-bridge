@@ -1,11 +1,10 @@
+"""OneConnect Bridge 内置产品目录."""
 from __future__ import annotations
 
+from functools import lru_cache
 from pathlib import Path
-
 import yaml
-
 from .models import ProductSpec
-
 
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "catalog.yaml"
 _REQUIRED_FIELDS = frozenset(
@@ -20,13 +19,12 @@ _REQUIRED_FIELDS = frozenset(
     }
 )
 
-
 class CatalogError(ValueError):
-    pass
+    """Raised when the bundled product catalog is invalid."""
 
-
+@lru_cache(maxsize=8)
 def load_catalog(path: Path = CATALOG_PATH) -> dict[str, ProductSpec]:
-    """Load product identity records without loading any service definitions."""
+    """目录为打包静态文件，按路径缓存；返回共享实例，调用方不得修改。"""
 
     try:
         value = yaml.safe_load(path.read_text(encoding="utf-8"))

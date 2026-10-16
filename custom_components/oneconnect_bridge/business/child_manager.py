@@ -1,3 +1,4 @@
+"""OneConnect Bridge 子设备注册与持久化."""
 from __future__ import annotations
 
 import logging
@@ -5,12 +6,12 @@ import secrets
 from threading import RLock
 from typing import Any
 
+from ..const import MAX_CHILD_DEVICES_PER_GATEWAY
 from ..core.cloud_runtime import (
     CloudM2MClient,
     CloudRuntimeError,
     OnlineChildCommand,
 )
-from ..const import MAX_CHILD_DEVICES_PER_GATEWAY
 from ..storage import GatewayStore
 from .child_protocol import (
     ChildIdentity,
@@ -29,9 +30,7 @@ from .child_protocol import (
 )
 from .models import GatewayPlan
 
-
 _LOGGER = logging.getLogger(__name__)
-
 
 class ChildManager:
     """Register desired children through the already authenticated parent session."""
@@ -94,7 +93,43 @@ class ChildManager:
                     client.serial_number,
                     error,
                 )
+        self.prune_orphans(client, access_token)
         return success
+
+    def prune_orphans(self, client: CloudM2MClient, access_token: str) -> None:
+        """删除存储中有而计划中没有的云子设备：计划是唯一事实，先云后本地（父会话就绪后调用)."""
+
+        plan_keys = {child.key for child in self.plan.children}
+        stored = self.store.read_child_materials()
+        for key in sorted(set(stored) - plan_keys):
+            material_data = stored[key]
+            if not isinstance(material_data, dict) or material_data.get("devId") is None:
+                self.store.remove_child(key)
+                continue
+            try:
+                material = material_from_storage(material_data)
+            except (KeyError, ValueError, TypeError):
+                self.store.remove_child(key)
+                continue
+            response = client.request(
+                "child_batch_delete_removed",
+                build_batch_delete_request(
+                    access_token=access_token,
+                    token=secrets.token_bytes(2),
+                    material=material,
+                ),
+            )
+            if response.get("errcode") != 0:
+                _LOGGER.warning(
+                    "Orphan child %s delete returned %s",
+                    key,
+                    response.get("errcode"),
+                )
+                continue
+            self.store.remove_child(key)
+            _LOGGER.info(
+                "Pruned orphan child %s from gateway %s", key, client.serial_number
+            )
 
     def _register_one(
         self,
@@ -204,7 +239,7 @@ class ChildManager:
                 f"child {child.key} devInfoSync errcode {dev_info.get('errcode')}"
             )
 
-        # Accept observed statusSync errcode 1000 because the SDK still registers the child.
+        # 实测 Python/C 在子设备受理时 statusSync 返回 1000：保留应答供诊断，不拒绝
         status = client.request(
             "child_status_sync",
             build_status_sync_request(
@@ -231,11 +266,19 @@ class ChildManager:
                         room=child.room,
                     ),
                 )
-                if room_response.get("errcode") != 0:
+                errcode = room_response.get("errcode")
+                if errcode == 1000:
+                    # 实测子设备受理类应答返回 1000（同 statusSync）：已受理，非错误
+                    _LOGGER.debug(
+                        "Child %s room update accepted (async, 1000) room=%s",
+                        child.key,
+                        child.room,
+                    )
+                elif errcode != 0:
                     _LOGGER.warning(
                         "Child %s room update returned %s",
                         child.key,
-                        room_response.get("errcode"),
+                        errcode,
                     )
                 else:
                     _LOGGER.debug(
@@ -328,7 +371,7 @@ class ChildManager:
                 sub_product_id=child.product.sub_prod_id,
             )
             pending_identity = {
-                "schema": "hwhomebridge-python.child-identity.v1",
+                "schema": "oneconnect_bridge.child-identity.v1",
                 "product_id": new_identity.product_id,
                 "sub_product_id": new_identity.sub_product_id,
                 "serial_number": new_identity.serial_number,
@@ -394,7 +437,7 @@ class ChildManager:
             self.store.write_json(
                 f"children/{child.key}/replacement.json",
                 {
-                    "schema": "hwhomebridge-python.replacement.v1",
+                    "schema": "oneconnect_bridge.replacement.v1",
                     "stage": "old_delete_pending",
                     "old_product_id": old_identity.get("product_id"),
                     "new_product_id": new_identity.product_id,
@@ -458,9 +501,14 @@ class ChildManager:
                     f"children/{child_key}/material.json"
                 )
                 if material_data is None:
-                    raise ChildProtocolError(
-                        f"removed child {child_key} has no cloud material"
+                    # 该 child 从未 batchBind 成功（云端本就无设备）：
+                    # 清掉本地残留后继续，若抛错会死锁全部 reload（含删除操作）
+                    self.store.remove_child(child_key)
+                    _LOGGER.info(
+                        "Removed child %s had no cloud material; local traces cleared",
+                        child_key,
                     )
+                    continue
                 material = material_from_storage(material_data)
             else:
                 material = material_record[2]
@@ -600,7 +648,7 @@ class ChildManager:
             self.store.write_json(
                 relative,
                 {
-                    "schema": "hwhomebridge-python.child-identity.v1",
+                    "schema": "oneconnect_bridge.child-identity.v1",
                     "product_id": identity.product_id,
                     "sub_product_id": identity.sub_product_id,
                     "serial_number": identity.serial_number,

@@ -1,3 +1,4 @@
+"""OneConnect Bridge 子设备云协议载荷."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -19,10 +20,8 @@ from ..core.m2m import (
 )
 from .models import ChildPlan
 
-
 class ChildProtocolError(ValueError):
-    pass
-
+    """Raised when a child payload is outside the observed contract."""
 
 @dataclass(frozen=True)
 class ChildIdentity:
@@ -64,7 +63,6 @@ class ChildIdentity:
         value["setupType"] = plan.product.setup_type
         return value
 
-
 @dataclass(frozen=True)
 class ChildMaterial:
     dev_id: str
@@ -78,7 +76,7 @@ class ChildMaterial:
 
     def as_storage(self, *, product_id: str, sub_product_id: str) -> dict[str, object]:
         return {
-            "schema": "hwhomebridge-python.child-material.v1",
+            "schema": "oneconnect_bridge.child-material.v1",
             "product_id": product_id,
             "sub_product_id": sub_product_id,
             "devId": self.dev_id,
@@ -91,7 +89,6 @@ class ChildMaterial:
             "udid": self.udid,
         }
 
-
 @dataclass(frozen=True)
 class ChildCommand:
     dev_id: str
@@ -100,7 +97,6 @@ class ChildCommand:
     context: bytes
     payload: dict[str, object]
     message: BridgeCloudMessage
-
 
 def decode_child_command(
     message: BridgeCloudMessage, *, known_dev_ids: set[str]
@@ -137,7 +133,6 @@ def decode_child_command(
         message=message,
     )
 
-
 def build_child_command_response(
     *, command: ChildCommand, access_token: str, sequence: int
 ) -> bytes:
@@ -168,7 +163,6 @@ def build_child_command_response(
     output.extend(payload)
     return len(output).to_bytes(2, "big") + output
 
-
 def _encode_extended(value: int) -> tuple[int, bytes]:
     if value < 0:
         raise ChildProtocolError("child ACK option value cannot be negative")
@@ -179,7 +173,6 @@ def _encode_extended(value: int) -> tuple[int, bytes]:
     if value < 65805:
         return 14, (value - 269).to_bytes(2, "big")
     raise ChildProtocolError("child ACK option value is too large")
-
 
 def build_batch_bind_request(
     *, access_token: str, token: bytes, identity: ChildIdentity, plan: ChildPlan,
@@ -203,7 +196,6 @@ def build_batch_bind_request(
             }]
         ),
     )
-
 
 def build_dev_info_sync_request(
     *, access_token: str, token: bytes, identity: ChildIdentity,
@@ -230,7 +222,6 @@ def build_dev_info_sync_request(
         ),
     )
 
-
 def build_status_sync_request(
     *, access_token: str, token: bytes, material: ChildMaterial,
 ) -> BridgeCloudRequest:
@@ -245,7 +236,6 @@ def build_status_sync_request(
         ),
     )
 
-
 def build_room_update_request(
     *, access_token: str, token: bytes, material: ChildMaterial, room: str,
 ) -> BridgeCloudRequest:
@@ -256,6 +246,7 @@ def build_room_update_request(
     return BridgeCloudRequest(
         code=COAP_POST,
         token=token,
+        # 上游 1013 实锤：roomUpdated 事件走 .sys/deviceEvent
         paths=(".sys", "deviceEvent"),
         sequence=b"",
         access_token=access_token,
@@ -277,7 +268,6 @@ def build_room_update_request(
         ),
     )
 
-
 def build_batch_delete_request(
     *, access_token: str, token: bytes, material: ChildMaterial,
 ) -> BridgeCloudRequest:
@@ -289,7 +279,6 @@ def build_batch_delete_request(
         access_token=access_token,
         payload=encode_bridge_compact_json({"devIds": [material.dev_id]}),
     )
-
 
 def build_data_sync_request(
     *, access_token: str, token: bytes, child: ChildPlan,
@@ -313,7 +302,6 @@ def build_data_sync_request(
         ),
     )
 
-
 def parse_batch_bind_response(
     payload: dict[str, object], *, identity: ChildIdentity,
 ) -> ChildMaterial:
@@ -322,7 +310,8 @@ def parse_batch_bind_response(
     failures = payload.get("failureList")
     successes = payload.get("successList")
     if not isinstance(failures, list) or failures:
-        raise ChildProtocolError("batchBind returned a failureList")
+        # failureList 内容是云端拒绝原因的唯一线索，必须完整带入异常消息
+        raise ChildProtocolError(f"batchBind returned a failureList: {failures!r}")
     if not isinstance(successes, list) or len(successes) != 1:
         raise ChildProtocolError("batchBind did not return one success item")
     item = successes[0]
@@ -354,7 +343,6 @@ def parse_batch_bind_response(
         serial_number=item["sn"],
         udid=item["udid"],
     )
-
 
 def material_from_storage(value: dict[str, Any]) -> ChildMaterial:
     try:

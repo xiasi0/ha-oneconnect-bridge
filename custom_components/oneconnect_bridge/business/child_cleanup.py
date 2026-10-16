@@ -1,3 +1,4 @@
+"""OneConnect Bridge 子设备清理."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -12,15 +13,14 @@ from .child_protocol import (
     material_from_storage,
 )
 
-
 _LOGGER = logging.getLogger(__name__)
-
 
 @dataclass(frozen=True)
 class ChildCleanupResult:
+    """Results for child deletion requests sent before parent revoke."""
+
     deleted: tuple[str, ...]
     failed: tuple[str, ...]
-
 
 class ChildCleanupClient(CloudM2MClient):
     """Delete children and then revoke their parent over one cloud session."""
