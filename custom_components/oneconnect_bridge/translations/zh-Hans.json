@@ -3,29 +3,102 @@
     "step": {
       "user": {
         "title": "添加 OneConnect Bridge 网关",
-        "description": "选择用于华为局域网配对的 IPv4 网卡。配对时请在华为智慧生活中手动输入 8 位 PIN。",
+        "description": "选择用于华为局域网配对的 IPv4 网卡。条目添加后网关立即开始等待配对，PIN 显示在通知中，请在华为智慧生活 App 中添加发现的网关并输入 PIN。",
         "data": {
-          "interface_ip": "配对网卡 IPv4 地址"
-        }
-      },
-      "init": {
-        "title": "选择配对网卡",
-        "data": {
-          "interface_ip": "配对网卡 IPv4 地址"
+          "interface_ip": "IPv4 网卡"
         }
       }
     },
     "abort": {
       "no_ipv4_interface": "没有发现可用的 IPv4 网卡。",
       "already_configured": "此网关已经配置。"
-    },
-    "error": {
-      "mac_not_found": "无法读取所选网卡的 MAC 地址。"
     }
   },
-  "device": {
-    "gateway": {
-      "name": "智控网关"
+  "options": {
+    "step": {
+      "init": {
+        "title": "网关设置",
+        "menu_options": {
+          "interface": "网络接口",
+          "add_children": "添加子设备",
+          "manage_children": "管理子设备",
+          "remove_children": "删除子设备",
+          "pairing_status": "配对状态"
+        }
+      },
+      "interface": {
+        "title": "配对网卡",
+        "data": {
+          "interface_ip": "配对网卡 IPv4 地址"
+        }
+      },
+      "add_children": {
+        "title": "添加子设备",
+        "description": "把已存在的 Home Assistant 实体绑定到华为产品，使其作为子设备出现在智慧生活 App 中。已绑定的实体会被自动排除。可以只选一个实体，也可以整批选择——所有选中实体共用下方选择的产品与房间。",
+        "data": {
+          "entity_id": "Home Assistant 实体",
+          "product_ref": "华为产品",
+          "room": "房间"
+        },
+        "data_description": {
+          "entity_id": "要暴露的一个或多个实体，其状态与控制将镜像到智慧生活。",
+          "product_ref": "这些实体在智慧生活中呈现的华为设备类型。",
+          "room": "在智慧生活 App 中显示的房间。"
+        }
+      },
+      "manage_children": {
+        "title": "管理子设备",
+        "description": "当前网关已暴露 {count} 个子设备。选择一个进入编辑界面；删除子设备请使用「删除子设备」。",
+        "data": {
+          "edit": "子设备"
+        },
+        "data_description": {
+          "edit": "打开所选子设备的编辑界面。"
+        }
+      },
+      "remove_children": {
+        "title": "删除子设备",
+        "description": "当前网关已暴露 {count} 个子设备。勾选要删除的子设备（可多选）。",
+        "data": {
+          "remove": "要删除的子设备"
+        },
+        "data_description": {
+          "remove": "勾选的子设备将解除绑定，并从智慧生活云端删除。"
+        }
+      },
+      "edit_child": {
+        "title": "编辑子设备",
+        "description": "正在编辑 {name}。绑定的实体（{entity}）不可在此更改——如需更换实体，请先移除再重新添加。",
+        "data": {
+          "product_ref": "华为产品",
+          "friendly_name": "显示名称",
+          "room": "房间"
+        }
+      },
+      "pairing_status": {
+        "title": "配对状态",
+        "description": "网关 **{serial}** 正在等待配对，当前 PIN：**{pin}**。\n\n打开华为智慧生活 App，添加发现的网关并输入 PIN，完成后回到本页点下方按钮。检测到绑定材料后网关将自动上线并创建实体。",
+        "submit": "我已在智慧生活中输入 PIN，检查配对"
+      }
+    },
+    "abort": {
+      "bulk_done": "已添加 {added} 个子设备，跳过 {skipped} 个。",
+      "nothing_added": "没有添加任何子设备（跳过 {skipped} 个）。",
+      "bulk_removed": "已移除 {removed} 个子设备。",
+      "nothing_selected": "未选择任何内容。",
+      "no_children": "当前网关还没有子设备。",
+      "mapping_invalid": "网关映射文件无效，已保持原样未做修改。",
+      "child_missing": "所选的子设备已不存在。",
+      "child_updated": "{name} 已更新。"
+    },
+    "error": {
+      "product_not_supported": "该产品暂不支持通过界面绑定。",
+      "apply_failed": "云端应用失败，详情见日志。"
+    }
+  },
+  "issues": {
+    "mapping_invalid": {
+      "title": "网关 {serial} 的子设备映射文件无效：{error}"
     }
   },
   "entity": {
@@ -34,43 +107,37 @@
         "name": "在线"
       }
     },
+    "sensor": {
+      "serial": {
+        "name": "网关序列号"
+      },
+      "child_count": {
+        "name": "子设备数量",
+        "unit_of_measurement": "个"
+      }
+    },
     "button": {
       "reload_children": {
         "name": "重载子设备配置"
       }
-    },
-    "sensor": {
-      "child_count": {
-        "name": "子设备数量",
-        "unit_of_measurement": "个"
-      },
-      "serial": {
-        "name": "网关序列号"
+    }
+  },
+  "notification": {
+    "pairing_title": "OneConnect Bridge 配对",
+    "pairing_message": "网关 `{serial}` 正在等待配对。\n\nPIN：`{pin}`\n\n请打开华为智慧生活，选择添加网关并手动输入 PIN。\n\n产品资料由网关局域网发现响应提供。",
+    "gateway_limit_title": "OneConnect Bridge 网关数量超限",
+    "gateway_limit_message": "已达到最多 {limit} 个独立网关实例。请先删除一个网关条目再添加。\n\n{error}"
+  },
+  "services": {
+    "start_pairing": {
+      "name": "启动网关配对",
+      "description": "为一台 Python 网关启动本地 5683 配对会话。",
+      "fields": {
+        "serial": {
+          "name": "网关序列号",
+          "description": "集成展示的父网关序列号。"
+        }
       }
     }
-  },
-  "exceptions": {
-    "gateway_limit": {
-      "message": "已达到最多 {limit} 个独立网关实例。"
-    },
-    "mapping_file_unavailable": {
-      "message": "网关映射配置文件不可用。"
-    },
-    "mapping_reload_failed": {
-      "message": "子设备映射配置重载失败：{error}"
-    },
-    "unknown_gateway": {
-      "message": "未知的 OneConnect Bridge 网关：{serial}"
-    }
-  },
-  "common": {
-    "gateway_limit_title": "OneConnect Bridge 网关数量超限",
-    "gateway_limit_message": "已达到最多 {limit} 个独立网关实例。请删除一个已有网关后再添加。\n\n{error}",
-    "mapping_not_loaded_title": "OneConnect Bridge 子设备配置",
-    "mapping_not_loaded_message": "网关 `{serial}` 的子设备配置未加载：\n\n{error}\n\n请修正 mapping.yaml 后点击“重载子设备配置”。",
-    "mapping_not_reloaded_title": "OneConnect Bridge 子设备配置",
-    "mapping_not_reloaded_message": "网关 `{serial}` 的子设备配置未重载：\n\n{error}\n\n旧配置仍保持运行，请修正 mapping.yaml 后再次重载。",
-    "pairing_title": "OneConnect Bridge 配对",
-    "pairing_message": "网关 `{serial}` 正在等待配对。\n\nPIN：`{pin}`\n\n请打开华为智慧生活，选择添加网关并手动输入 PIN。"
   }
 }

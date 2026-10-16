@@ -1,0 +1,143 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Add OneConnect Bridge gateway",
+        "description": "Select the IPv4 interface used for Huawei LAN pairing. Once the entry is added, the gateway starts waiting for pairing immediately; the PIN is shown in a notification — add the discovered gateway in the Huawei AI Life app and enter it.",
+        "data": {
+          "interface_ip": "IPv4 interface"
+        }
+      }
+    },
+    "abort": {
+      "no_ipv4_interface": "No available IPv4 interface was found.",
+      "already_configured": "This gateway is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Gateway Settings",
+        "menu_options": {
+          "interface": "LAN interface",
+          "add_children": "Add child devices",
+          "manage_children": "Manage child devices",
+          "remove_children": "Remove child devices",
+          "pairing_status": "Pairing status"
+        }
+      },
+      "interface": {
+        "title": "Pairing interface",
+        "data": {
+          "interface_ip": "Pairing interface IPv4 address"
+        }
+      },
+      "add_children": {
+        "title": "Add child devices",
+        "description": "Bind existing Home Assistant entities to a Huawei product so they appear in the Smart Life app. Already bound entities are excluded automatically. Pick one entity or a whole batch — all selected entities share the chosen product and room.",
+        "data": {
+          "entity_id": "Home Assistant entities",
+          "product_ref": "Huawei product",
+          "room": "Room"
+        },
+        "data_description": {
+          "entity_id": "One or more entities to expose. Their state and controls are mirrored to Smart Life.",
+          "product_ref": "The Huawei device type these entities appear as.",
+          "room": "Room shown in the Smart Life app."
+        }
+      },
+      "manage_children": {
+        "title": "Manage child devices",
+        "description": "This gateway currently exposes {count} child device(s). Pick one to edit; use \"Remove child devices\" to delete.",
+        "data": {
+          "edit": "Child device"
+        },
+        "data_description": {
+          "edit": "Open the editor for the selected child."
+        }
+      },
+      "remove_children": {
+        "title": "Remove child devices",
+        "description": "This gateway currently exposes {count} child device(s). Tick the ones to remove (multi-select).",
+        "data": {
+          "remove": "Child devices to remove"
+        },
+        "data_description": {
+          "remove": "Ticked children are unbound and deleted from the Smart Life cloud."
+        }
+      },
+      "edit_child": {
+        "title": "Edit child device",
+        "description": "Editing {name}. The bound entity ({entity}) cannot be changed here — remove the child and add it again to move it.",
+        "data": {
+          "product_ref": "Huawei product",
+          "friendly_name": "Display name",
+          "room": "Room"
+        }
+      },
+      "pairing_status": {
+        "title": "Pairing status",
+        "description": "Gateway **{serial}** is waiting for pairing; current PIN: **{pin}**.\n\nOpen the Huawei AI Life app, add the discovered gateway and enter the PIN, then come back here and press the button below. Once the binding material is detected the gateway goes online and entities are created.",
+        "submit": "I've entered the PIN in AI Life — check pairing"
+      }
+    },
+    "abort": {
+      "bulk_done": "Added {added} child device(s), skipped {skipped}.",
+      "nothing_added": "No child device was added ({skipped} skipped).",
+      "bulk_removed": "Removed {removed} child device(s).",
+      "nothing_selected": "Nothing selected.",
+      "no_children": "This gateway has no child devices yet.",
+      "mapping_invalid": "The gateway mapping file is invalid and was left untouched.",
+      "child_missing": "The selected child device no longer exists.",
+      "child_updated": "{name} updated."
+    },
+    "error": {
+      "product_not_supported": "This Huawei product cannot be bound through the UI yet.",
+      "apply_failed": "Applying the plan to the cloud failed — see the logs for details."
+    }
+  },
+  "issues": {
+    "mapping_invalid": {
+      "title": "Gateway {serial} has an invalid child mapping file: {error}"
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "online": {
+        "name": "Online"
+      }
+    },
+    "sensor": {
+      "serial": {
+        "name": "Gateway Serial"
+      },
+      "child_count": {
+        "name": "Sub-device Count",
+        "unit_of_measurement": "个"
+      }
+    },
+    "button": {
+      "reload_children": {
+        "name": "Reload Child Devices"
+      }
+    }
+  },
+  "notification": {
+    "pairing_title": "OneConnect Bridge Pairing",
+    "pairing_message": "Gateway `{serial}` is waiting for pairing.\n\nPIN: `{pin}`\n\nOpen the Huawei Smart Life app, choose to add a gateway and enter the PIN manually.\n\nProduct information is provided by the gateway LAN discovery response.",
+    "gateway_limit_title": "OneConnect Bridge gateway limit reached",
+    "gateway_limit_message": "At most {limit} standalone gateway instances are allowed. Remove an existing gateway entry before adding another.\n\n{error}"
+  },
+  "services": {
+    "start_pairing": {
+      "name": "Start gateway pairing",
+      "description": "Start the local 5683 pairing session for one Python gateway.",
+      "fields": {
+        "serial": {
+          "name": "Gateway serial",
+          "description": "The parent gateway serial shown by the integration."
+        }
+      }
+    }
+  }
+}
