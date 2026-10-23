@@ -7,7 +7,14 @@ import yaml
 
 from ..const import MAX_CHILD_DEVICES_PER_GATEWAY
 from .adapters import get_service_adapter
-from .models import ChildPlan, GatewayPlan, ProductSpec, ServiceBinding, ServiceRef
+from .models import (
+    ChildPlan,
+    GatewayPlan,
+    ProductSpec,
+    ResyncPlan,
+    ServiceBinding,
+    ServiceRef,
+)
 
 
 class MappingConfigError(ValueError):
@@ -73,7 +80,11 @@ def load_enabled_mapping(path: Path) -> GatewayPlan | None:
                 bindings=bindings,
             )
         )
-    return GatewayPlan(gateway_serial=gateway_serial, children=tuple(children))
+    return GatewayPlan(
+        gateway_serial=gateway_serial,
+        children=tuple(children),
+        resync=_parse_resync(value.get("resync")),
+    )
 
 
 def _parse_product(value: dict[str, Any], child_key: str) -> ProductSpec:
@@ -252,3 +263,60 @@ def _optional_text(value: Any, key: str) -> str | None:
     if result is not None and not isinstance(result, str):
         raise MappingConfigError(f"product {key} must be text")
     return result
+
+
+def _parse_resync(value: Any) -> ResyncPlan:
+    """解析顶层的 resync 段（可选，缺省即默认开启）。"""
+
+    if value is None:
+        return ResyncPlan()
+    if not isinstance(value, dict):
+        raise MappingConfigError("resync must be a mapping")
+
+    known = {"enabled", "interval", "first_delay", "skip_services"}
+    unknown = set(value) - known
+    if unknown:
+        raise MappingConfigError(
+            f"resync has unsupported keys: {', '.join(sorted(unknown))}"
+        )
+
+    enabled = value.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise MappingConfigError("resync.enabled must be a boolean")
+
+    interval = value.get("interval", 600)
+    if (
+        isinstance(interval, bool)
+        or not isinstance(interval, int)
+        or not 60 <= interval <= 86400
+    ):
+        raise MappingConfigError(
+            "resync.interval must be an integer within 60..86400 seconds"
+        )
+
+    first_delay = value.get("first_delay", 90)
+    if (
+        isinstance(first_delay, bool)
+        or not isinstance(first_delay, int)
+        or not 0 <= first_delay <= 3600
+    ):
+        raise MappingConfigError(
+            "resync.first_delay must be an integer within 0..3600 seconds"
+        )
+
+    raw_skip = value.get("skip_services")
+    if raw_skip is None:
+        skip_services = ResyncPlan.skip_services
+    else:
+        if not isinstance(raw_skip, list) or any(
+            not isinstance(item, str) or not item for item in raw_skip
+        ):
+            raise MappingConfigError("resync.skip_services must be a list of service ids")
+        skip_services = tuple(raw_skip)
+
+    return ResyncPlan(
+        enabled=enabled,
+        interval=interval,
+        first_delay=first_delay,
+        skip_services=skip_services,
+    )

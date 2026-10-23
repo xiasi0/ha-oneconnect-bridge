@@ -5,6 +5,22 @@ schema: 1
 enabled: true
 gateway_serial: ""
 
+# Periodic full-state resync. Enabled by default: HA-driven reports are
+# event-based, so characteristics the vendor Profile says are reported on a
+# timer (e.g. 294P electric.current, "每10分钟上报") would only ever reach the
+# cloud once, and slow-moving read-only readings (battery, temperature) would
+# leave the cloud shadow frozen at the startup snapshot.
+#
+# `skip_services` defaults to [power]: the Profile defines power.current as
+# "变化上报" (report-on-change), so re-sending it on a timer both contradicts
+# the contract and pollutes the cloud-side statistics.
+#
+# resync:
+#   enabled: true
+#   interval: 600        # 60..86400 seconds
+#   first_delay: 90      # 0..3600 seconds; startup sync already reported once
+#   skip_services: [power]
+
 children:
   oneconnect_link_probe:
     product:

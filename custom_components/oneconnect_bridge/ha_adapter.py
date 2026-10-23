@@ -100,6 +100,84 @@ class HAEntityBridge:
 
         return cancel
 
+    def schedule_periodic_resync(self, plan, callback):
+        """周期性全量状态重同步（配置见 mapping 顶层的 ``resync`` 段）。
+
+        **默认开启**（``resync.enabled`` 缺省为 true）。桥接的状态上报本来是
+        事件驱动的，这个机制用于补上两类覆盖不到的场景：
+
+        1. **Profile 要求"定期上报"的特征**
+           例：294P 的 ``electric.current``，官方 descCh 原文是
+           「实时电流 单位:mA **每10分钟上报**」。只在启动时报一次，
+           云端就拿不到时间序列。
+        2. **慢变只读特征**
+           电池电量、温湿度这类值长期不变 → 状态变化事件永不触发 →
+           云端影子会一直停在启动那一刻的快照上。
+
+        ``skip_services`` 默认跳过 ``power``：官方对 ``power.current`` 的定义是
+        「实时功率 单位:瓦 **变化上报**」，周期重报它既违背语义，也会让
+        云端把它当成周期性数据纳入统计。
+
+        配置示例：
+
+            resync:
+              enabled: true
+              interval: 600        # 60..86400 秒
+              first_delay: 90      # 0..3600 秒；启动同步已报过一轮，首轮稍等
+              skip_services: [power]
+        """
+
+        resync = getattr(plan, "resync", None)
+        if resync is None or not resync.enabled:
+            _LOGGER.debug("Periodic resync is not enabled for this gateway")
+            return lambda: None
+
+        interval: int = resync.interval
+        first_delay: int = resync.first_delay
+        skip_services = frozenset(resync.skip_services)
+
+        state: dict[str, object] = {"handle": None, "stopped": False}
+
+        async def tick(_now) -> None:
+            if state["stopped"]:
+                return
+            for child in plan.children:
+                try:
+                    snapshot = await self._async_read_child_state(child)
+                except Exception as error:  # noqa: BLE001 - 周期任务不能中断
+                    _LOGGER.warning(
+                        "Periodic resync failed child=%s: %s", child.key, error
+                    )
+                    continue
+                if not snapshot:
+                    continue
+                filtered = {
+                    key: value
+                    for key, value in snapshot.items()
+                    if key not in skip_services
+                }
+                if not filtered:
+                    continue
+                _LOGGER.debug(
+                    "Periodic resync child=%s services=%s",
+                    child.key,
+                    list(filtered),
+                )
+                callback(child.key, filtered)
+            if not state["stopped"]:
+                state["handle"] = async_call_later(self._hass, interval, tick)
+
+        state["handle"] = async_call_later(self._hass, first_delay, tick)
+
+        def cancel() -> None:
+            state["stopped"] = True
+            handle = state["handle"]
+            if handle is not None:
+                handle()
+            state["handle"] = None
+
+        return cancel
+
     def _run(self, coroutine):
         future = asyncio.run_coroutine_threadsafe(coroutine, self._hass.loop)
         return future.result(timeout=15)

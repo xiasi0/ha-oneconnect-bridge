@@ -174,6 +174,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         if old_startup_remover is not None:
             old_startup_remover()
+        old_resync_remover = data.setdefault("periodic_resync_removers", {}).pop(
+            entry.entry_id, None
+        )
+        if old_resync_remover is not None:
+            old_resync_remover()
         if plan is not None:
             data["state_removers"][entry.entry_id] = entity_bridge.setup_state_listener(
                 plan,
@@ -182,6 +187,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             data["startup_sync_removers"][entry.entry_id] = entity_bridge.schedule_startup_sync(
                 plan,
                 runtime.enqueue_child_state,
+            )
+            # 周期性全量重报：Profile 要求"每 N 分钟上报"的特征（如 294P 的
+            # electric.current）只靠事件驱动拿不到时间序列；电池、温湿度这类
+            # 慢变读数也需要定期刷新云端影子。默认开启，见 ResyncPlan。
+            data["periodic_resync_removers"][entry.entry_id] = (
+                entity_bridge.schedule_periodic_resync(
+                    plan,
+                    runtime.enqueue_child_state,
+                )
             )
 
     install_state_listeners(gateway_plan)
@@ -302,6 +316,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     startup_sync_remover = data.get("startup_sync_removers", {}).pop(entry.entry_id, None)
     if startup_sync_remover is not None:
         startup_sync_remover()
+    resync_remover = data.get("periodic_resync_removers", {}).pop(entry.entry_id, None)
+    if resync_remover is not None:
+        resync_remover()
     runtime: GatewayRuntime | None = data["runtimes"].pop(entry.entry_id, None)
     if runtime is not None:
         remover = data.get("notification_removers", {}).pop(entry.entry_id, None)
@@ -335,6 +352,9 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
         startup_sync_remover = data.get("startup_sync_removers", {}).pop(entry.entry_id, None)
         if startup_sync_remover is not None:
             startup_sync_remover()
+        resync_remover = data.get("periodic_resync_removers", {}).pop(entry.entry_id, None)
+        if resync_remover is not None:
+            resync_remover()
         runtime: GatewayRuntime | None = data.get("runtimes", {}).pop(entry.entry_id, None)
         if runtime is not None:
             await hass.async_add_executor_job(runtime.stop)
