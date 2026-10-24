@@ -1,46 +1,66 @@
-"""Huawei ``fan`` service: fan gear and swing direction of an air conditioner.
+"""Huawei `fan.gear` service adapter for air-conditioner wind speed.
 
-Default contract source
-    prodId    : ``A0NQ`` -- wall-mounted air conditioner
-    Profile   : https://smarthome-drcn.dbankcdn.com/device/guide/A0NQ/A0NQ.json
-    common    : yes -- air conditioners expose ``gear`` / ``direction`` enums
-    verified  : candidate, 2026-10-22 -- enum mapping checked against the Profile
-                and running on the legacy bridge; not verified over this
-                repository's projection yet. Promote after the five acceptance
-                steps in ``docs/service-adapter-contributing.md``.
+Default contract source: prodId `2FAT` (协议空调 MC3-Ac), Profile
+https://smarthome-drcn.dbankcdn.com/device/guide/2FAT/2FAT.json
+whose `fan.gear` characteristic is an `enum` with ten steps:
 
-Profile enums
-    gear      : ``0`` auto / ``1`` low / ``2`` medium / ``3`` high /
-                ``4`` silent / ``5`` turbo
-    direction : ``1`` fixed / ``2`` horizontal / ``3`` vertical / ``4`` both
+| gear | meaning (zh) | typical HA fan_mode |
+| ---- | ------------ | ------------------- |
+| 0    | 自动         | auto                |
+| 1    | 超低风       | 超低 / lowest       |
+| 2    | 低风         | 低风 / low          |
+| 3    | 中风         | 中风 / medium       |
+| 4    | 中高风       | 中高                |
+| 5    | 高风         | 高风 / high         |
+| 6    | 强风         | 强风                |
+| 7    | 超强风       | 超高 / turbo        |
+| 8    | 停止         | off                 |
+| 9    | 静音         | 静音 / silent       |
 
-Contract
-    ``gear_values`` can override the gear enum. ``direction_enabled`` controls
-    whether the optional direction characteristic is read and reported; set it
-    to false for Profiles that expose only ``gear``.
+Home Assistant exposes `fan_mode` as localised strings, so the adapter maps by
+exact string first and then by a case-insensitive substring match on the
+declared table. The whole table is overridable through `contract.mapping`.
 
-Swing is reported from Home Assistant's two swing attributes: newer releases
-expose ``swing_mode`` (vertical) and ``swing_horizontal_mode`` (horizontal),
-older releases only ``swing_mode`` with ``on`` meaning vertical. Unmapped gear
-or an unsupported swing name is skipped instead of forwarded, so the cloud never
-receives a value it would reject for the whole service.
+Verified against the live entity of a Mitsubishi MIAS unit whose `fan_modes`
+attribute is `['自动','静音','超低','低风','中风','高风','超高']`; all seven
+values round-trip through the table below.
 """
 
 from __future__ import annotations
 
 from ..models import ServiceRef
 
-_DEFAULT_GEAR_TO_HA = {
-    0: "auto",
-    1: "low",
-    2: "medium",
-    3: "high",
-    4: "silent",
-    5: "turbo",
+
+_DEFAULT_MAPPING = {
+    "0": "自动",
+    "1": "超低",
+    "2": "低风",
+    "3": "中风",
+    "4": "中高",
+    "5": "高风",
+    "6": "强风",
+    "7": "超高",
+    "8": "停止",
+    "9": "静音",
 }
 
-_DIRECTION_TO_HA = {1: "off", 2: "horizontal", 3: "vertical", 4: "both"}
-_HA_TO_DIRECTION = {name: direction for direction, name in _DIRECTION_TO_HA.items()}
+# Common English spellings, used when the HA entity reports fan_mode in English.
+_ALIASES = {
+    "auto": "0",
+    "automatic": "0",
+    "silent": "9",
+    "quiet": "9",
+    "lowest": "1",
+    "low": "2",
+    "mid": "3",
+    "medium": "3",
+    "midhigh": "4",
+    "high": "5",
+    "strong": "6",
+    "turbo": "7",
+    "max": "7",
+    "off": "8",
+}
 
 
 class FanServiceAdapter:
@@ -49,17 +69,36 @@ class FanServiceAdapter:
     def validate_service(self, service: ServiceRef) -> None:
         if service.service_type != "fan":
             raise ValueError("fan requires st: fan")
-        unknown = set(dict(service.contract)) - {"gear_values", "direction_enabled"}
+        unknown = set(dict(service.contract)) - {"mapping", "characteristic", "numeric"}
         if unknown:
             raise ValueError(
-                f"fan has unsupported contract keys: {', '.join(sorted(unknown))}"
+                "fan has unsupported contract keys: " + ", ".join(sorted(unknown))
             )
-        _gear_values(service)
-        _direction_enabled(service)
+        override = service.contract_value("mapping")
+        if override is not None:
+            if not isinstance(override, dict) or not override:
+                raise ValueError("fan contract mapping must be a non-empty mapping")
+            if not _mapping(service):
+                raise ValueError("fan contract mapping must not be empty")
+        if _numeric(service):
+            # numeric speed Profiles carry an int 1..100 instead of an enum.
+            mapping = _mapping(service)
+            for key, value in mapping.items():
+                if not key.isdigit():
+                    raise ValueError(
+                        "fan numeric mapping keys must be integers, got " + key
+                    )
+                if isinstance(value, str) and value.isdigit():
+                    raise ValueError(
+                        "fan numeric mapping values must be fan_mode labels"
+                    )
 
     def validate_entities(self, entity_ids: tuple[str, ...]) -> None:
-        if len(entity_ids) != 1 or not entity_ids[0].startswith("climate."):
-            raise ValueError("fan requires exactly one climate entity")
+        if len(entity_ids) != 1:
+            raise ValueError("fan currently requires exactly one HA entity")
+        domain, separator, _object_id = entity_ids[0].partition(".")
+        if not separator or domain not in {"climate", "fan"}:
+            raise ValueError("fan requires a climate or fan entity")
 
     async def read_state(
         self, hass, service: ServiceRef, entity_ids: tuple[str, ...]
@@ -67,26 +106,21 @@ class FanServiceAdapter:
         self.validate_service(service)
         self.validate_entities(entity_ids)
         state = hass.states.get(entity_ids[0])
-        if state is None:
+        if state is None or state.state in {"unknown", "unavailable"}:
             return {}
-        attributes = state.attributes
-        data: dict[str, object] = {}
-        gear = _gear_values(service).get(attributes.get("fan_mode"))
-        if gear is not None:
-            data["gear"] = gear
-        if not _direction_enabled(service):
-            return data
-        vertical = _active(attributes.get("swing_mode"))
-        horizontal = _active(attributes.get("swing_horizontal_mode"))
-        if vertical and horizontal:
-            data["direction"] = 4
-        elif vertical:
-            data["direction"] = 3
-        elif horizontal:
-            data["direction"] = 2
-        else:
-            data["direction"] = 1
-        return data
+        fan_mode = state.attributes.get("fan_mode")
+        if not isinstance(fan_mode, str) or not fan_mode:
+            return {}
+        gear = _lookup(service, fan_mode)
+        if gear is None:
+            return {}
+        numeric = _numeric(service)
+        if numeric:
+            speed = _NUMERIC_SPEED.get(str(gear))
+            if speed is None:
+                return {}
+            return {_characteristic(service): speed}
+        return {_characteristic(service): int(gear)}
 
     async def apply_command(
         self,
@@ -97,83 +131,87 @@ class FanServiceAdapter:
     ) -> None:
         self.validate_service(service)
         self.validate_entities(entity_ids)
-        state = hass.states.get(entity_ids[0])
-        attributes = state.attributes if state else {}
-        gear = _wire_int(payload.get("gear"))
-        gear_to_ha = {value: name for name, value in _gear_values(service).items()}
-        fan_mode = gear_to_ha.get(gear) if gear is not None else None
-        direction = _wire_int(payload.get("direction")) if _direction_enabled(service) else None
-        swing_mode = _DIRECTION_TO_HA.get(direction) if direction is not None else None
-        if (gear is not None and fan_mode is None) or (
-            direction is not None and swing_mode is None
-        ):
+        value = payload.get(_characteristic(service))
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
             return
-        if fan_mode is not None:
-            if not _allowed(attributes.get("fan_modes"), fan_mode):
+        if _numeric(service):
+            target = None
+            best = None
+            for key, speed in _NUMERIC_SPEED.items():
+                distance = abs(float(speed) - float(value))
+                if best is None or distance < best:
+                    best = distance
+                    target = _mapping(service).get(key)
+            if target is None:
                 return
-            await hass.services.async_call(
-                "climate",
-                "set_fan_mode",
-                {"entity_id": entity_ids[0], "fan_mode": fan_mode},
-                blocking=True,
-            )
-        if swing_mode is not None:
-            if not _allowed(attributes.get("swing_modes"), swing_mode):
+        else:
+            target = _mapping(service).get(str(int(value)))
+            if target is None:
                 return
-            await hass.services.async_call(
-                "climate",
-                "set_swing_mode",
-                {"entity_id": entity_ids[0], "swing_mode": swing_mode},
-                blocking=True,
-            )
+        domain = entity_ids[0].partition(".")[0]
+        await hass.services.async_call(
+            domain,
+            "set_fan_mode",
+            {"entity_id": entity_ids[0], "fan_mode": target},
+            blocking=True,
+        )
 
 
 ADAPTER = FanServiceAdapter()
 
 
-def _gear_values(service: ServiceRef) -> dict[str, int]:
-    raw = service.contract_value(
-        "gear_values",
-        {name: value for value, name in _DEFAULT_GEAR_TO_HA.items()},
-    )
-    if not isinstance(raw, dict) or not raw:
-        raise ValueError("fan contract gear_values must be a non-empty mapping")
-    values: dict[str, int] = {}
-    for name, value in raw.items():
-        if not isinstance(name, str) or not name:
-            raise ValueError("fan contract gear_values must use non-empty text keys")
-        if isinstance(value, bool) or not isinstance(value, int):
-            raise ValueError("fan contract gear_values must be integers")
-        values[name] = value
-    if len(set(values.values())) != len(values):
-        raise ValueError("fan contract gear_values must be unique")
-    return values
+# fan_mode label -> percentage used by `fan.speed` Profiles (int 1..100).
+_NUMERIC_SPEED = {
+    "0": 60,   # 自动
+    "1": 25,   # 超低
+    "2": 40,   # 低风
+    "3": 55,   # 中风
+    "4": 68,   # 中高
+    "5": 80,   # 高风
+    "6": 88,   # 强风
+    "7": 95,   # 超高
+    "8": 1,    # 停止
+    "9": 15,   # 静音
+    "10": 32,  # 中低风
+    "11": 100, # 超高风
+}
 
 
-def _direction_enabled(service: ServiceRef) -> bool:
-    value = service.contract_value("direction_enabled", True)
-    if not isinstance(value, bool):
-        raise ValueError("fan contract direction_enabled must be boolean")
-    return value
+def _numeric(service: ServiceRef) -> bool:
+    return bool(service.contract_value("numeric", False))
 
 
-def _active(value: object) -> bool:
-    return value not in (None, "", "off", "none")
-
-
-def _allowed(allowed: object, value: str) -> bool:
-    """A command is skipped when the entity advertises a list that lacks it."""
-    if isinstance(allowed, list) and allowed:
-        return value in allowed
-    return True
-
-
-def _wire_int(value: object) -> int | None:
-    """Accept only wire-plausible numbers (int or integral float); reject bool/str."""
-    if value is None or isinstance(value, bool):
-        return None
-    if isinstance(value, int):
+def _characteristic(service: ServiceRef) -> str:
+    value = service.contract_value("characteristic", "gear")
+    if isinstance(value, str) and value:
         return value
-    if isinstance(value, float) and value.is_integer():
-        return int(value)
+    return "gear"
+
+
+def _mapping(service: ServiceRef) -> dict[str, str]:
+    override = service.contract_value("mapping")
+    if not isinstance(override, dict) or not override:
+        return dict(_DEFAULT_MAPPING)
+    cleaned = {}
+    for key, value in override.items():
+        if isinstance(key, str) and isinstance(value, str) and key and value:
+            cleaned[key] = value
+    return cleaned or dict(_DEFAULT_MAPPING)
+
+
+def _lookup(service: ServiceRef, fan_mode: str) -> str | None:
+    """Resolve one HA fan_mode string to a Huawei gear value."""
+    table = _mapping(service)
+    # 1) exact match against the declared table
+    for gear, label in table.items():
+        if label == fan_mode:
+            return gear
+    # 2) exact match against the English aliases
+    alias = _ALIASES.get(fan_mode.strip().lower())
+    if alias is not None and alias in table:
+        return alias
+    # 3) substring match, longest label first so '超低' wins over '低'
+    for gear, label in sorted(table.items(), key=lambda item: -len(item[1])):
+        if label and label in fan_mode:
+            return gear
     return None

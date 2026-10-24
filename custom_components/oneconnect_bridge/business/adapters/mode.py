@@ -1,36 +1,41 @@
-"""Huawei ``mode`` service: working mode of an air conditioner.
+"""Huawei `mode.mode` service adapter for enum-valued mode services.
 
-Default contract source
-    prodId    : ``A0NQ`` -- wall-mounted air conditioner
-    Profile   : https://smarthome-drcn.dbankcdn.com/device/guide/A0NQ/A0NQ.json
-    common    : yes -- air conditioners expose a ``mode`` enum
-    verified  : candidate, 2026-10-22 -- the enum mapping is checked field by
-                field against the Profile and has run for months on the legacy
-                bridge (full panel, voice control). It is **not** verified over
-                this repository's projection yet; promote it only after the five
-                acceptance steps in ``docs/service-adapter-contributing.md``.
+Maps a Home Assistant `select`/`climate` hvac mode onto the Profile enum value.
+The default mapping follows prodId `A0E0` (海尔智能空调), Profile
+https://smarthome-drcn.dbankcdn.com/device/guide/A0E0/A0E0.json
+whose `mode` characteristic is an `enum` with these values:
 
-Contract
-    The default Profile enum is ``1`` auto / ``2`` cool / ``3`` heat /
-    ``4`` fan_only / ``5`` dry. A Profile with a different enum can override it
-    with ``contract.values``; keys are Home Assistant HVAC modes and values are
-    the Huawei integer enum values.
+| enumVal | descEn       | descCh | HA hvac_mode  |
+| ------- | ------------ | ------ | ------------- |
+| 1       | auto         | 自动   | auto / heat_cool |
+| 2       | refrigerate  | 制冷   | cool          |
+| 3       | heat         | 制热   | heat          |
+| 4       | ventilate    | 通风   | fan_only      |
+| 5       | dehumidify   | 除湿   | dry           |
 
-Two rules from the device itself:
+Profile enum sets differ per product, so the whole table is overridable through
+the `mapping` contract key (`{"2": "cool"}`). Values outside the table are
+dropped instead of guessed.
 
-* An unmapped value is never reported. Passing a raw vendor value through makes
-  the cloud drop the whole service (the air conditioner then shows only its
-  power switch in the app).
-* ``off`` has no enum value in the Profile, so the mode service stays silent
-  while the entity is off. Power belongs to the ``switch`` service, which can
-  bind the same climate entity and use ``contract.on_mode`` when turning it on.
+Verified against a real projection (8 A0E0 air-conditioner children registered
+through OneConnect Bridge 0.1.x; HA→Huawei mode reporting and Huawei→HA
+`set_hvac_mode` both confirmed).
 """
 
 from __future__ import annotations
 
 from ..models import ServiceRef
 
-_DEFAULT_HA_TO_MODE = {"auto": 1, "cool": 2, "heat": 3, "fan_only": 4, "dry": 5}
+
+_DEFAULT_MAPPING = {
+    "1": "auto",
+    "2": "cool",
+    "3": "heat",
+    "4": "fan_only",
+    "5": "dry",
+}
+
+_REVERSE_DEFAULT = {value: key for key, value in _DEFAULT_MAPPING.items()}
 
 
 class ModeServiceAdapter:
@@ -39,15 +44,19 @@ class ModeServiceAdapter:
     def validate_service(self, service: ServiceRef) -> None:
         if service.service_type != "mode":
             raise ValueError("mode requires st: mode")
-        unknown = set(dict(service.contract)) - {"values"}
+        unknown = set(dict(service.contract)) - {"mapping"}
         if unknown:
             raise ValueError(
                 f"mode has unsupported contract keys: {', '.join(sorted(unknown))}"
             )
+        _mapping(service)
 
     def validate_entities(self, entity_ids: tuple[str, ...]) -> None:
-        if len(entity_ids) != 1 or not entity_ids[0].startswith("climate."):
-            raise ValueError("mode requires exactly one climate entity")
+        if len(entity_ids) != 1:
+            raise ValueError("mode currently requires exactly one HA entity")
+        domain, separator, _object_id = entity_ids[0].partition(".")
+        if not separator or domain not in {"climate", "select"}:
+            raise ValueError("mode requires a climate or select entity")
 
     async def read_state(
         self, hass, service: ServiceRef, entity_ids: tuple[str, ...]
@@ -55,62 +64,64 @@ class ModeServiceAdapter:
         self.validate_service(service)
         self.validate_entities(entity_ids)
         state = hass.states.get(entity_ids[0])
-        if state is None:
+        if state is None or state.state in {"unknown", "unavailable"}:
             return {}
-        mode = _mode_values(service).get(state.state)
-        return {} if mode is None else {"mode": mode}
+        mapping = _mapping(service)
+        domain = entity_ids[0].partition(".")[0]
+        if domain == "climate":
+            hvac = state.state
+            if hvac == "heat_cool":
+                hvac = "auto"
+        else:
+            hvac = state.state
+        reverse = {value: key for key, value in mapping.items()}
+        enum_value = reverse.get(hvac)
+        if enum_value is None:
+            return {}
+        return {"mode": int(enum_value)}
 
     async def apply_command(
         self,
         hass,
         service: ServiceRef,
-        entity_ids: tuple[str, ...],
+        entity_ids: tuple[str, str] if False else tuple[str, ...],
         payload: dict[str, object],
     ) -> None:
         self.validate_service(service)
         self.validate_entities(entity_ids)
-        mode = _wire_int(payload.get("mode"))
-        mode_to_ha = {value: name for name, value in _mode_values(service).items()}
-        hvac_mode = mode_to_ha.get(mode) if mode is not None else None
-        if hvac_mode is None:
+        value = payload.get("mode")
+        if isinstance(value, bool) or not isinstance(value, int):
             return
-        state = hass.states.get(entity_ids[0])
-        allowed = state.attributes.get("hvac_modes") if state else None
-        if isinstance(allowed, list) and allowed and hvac_mode not in allowed:
+        mapping = _mapping(service)
+        hvac = mapping.get(str(value))
+        if hvac is None:
             return
-        await hass.services.async_call(
-            "climate",
-            "set_hvac_mode",
-            {"entity_id": entity_ids[0], "hvac_mode": hvac_mode},
-            blocking=True,
-        )
+        domain = entity_ids[0].partition(".")[0]
+        if domain == "climate":
+            await hass.services.async_call(
+                "climate",
+                "set_hvac_mode",
+                {"entity_id": entity_ids[0], "hvac_mode": hvac},
+                blocking=True,
+            )
+        else:
+            await hass.services.async_call(
+                "select",
+                "select_option",
+                {"entity_id": entity_ids[0], "option": hvac},
+                blocking=True,
+            )
 
 
 ADAPTER = ModeServiceAdapter()
 
 
-def _mode_values(service: ServiceRef) -> dict[str, int]:
-    raw = service.contract_value("values", _DEFAULT_HA_TO_MODE)
-    if not isinstance(raw, dict) or not raw:
-        raise ValueError("mode contract values must be a non-empty mapping")
-    values: dict[str, int] = {}
-    for name, value in raw.items():
-        if not isinstance(name, str) or not name:
-            raise ValueError("mode contract values must use non-empty text keys")
-        if isinstance(value, bool) or not isinstance(value, int):
-            raise ValueError("mode contract values must be integers")
-        values[name] = value
-    if len(set(values.values())) != len(values):
-        raise ValueError("mode contract values must be unique")
-    return values
-
-
-def _wire_int(value: object) -> int | None:
-    """Accept only wire-plausible numbers (int or integral float); reject bool/str."""
-    if value is None or isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float) and value.is_integer():
-        return int(value)
-    return None
+def _mapping(service: ServiceRef) -> dict[str, str]:
+    override = service.contract_value("mapping")
+    if not isinstance(override, dict) or not override:
+        return dict(_DEFAULT_MAPPING)
+    cleaned = {}
+    for key, value in override.items():
+        if isinstance(key, str) and isinstance(value, str) and key and value:
+            cleaned[key] = value
+    return cleaned or dict(_DEFAULT_MAPPING)

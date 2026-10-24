@@ -7,12 +7,12 @@ from ..models import ServiceRef
 
 class SwitchServiceAdapter:
     service_id = "switch"
-    _domains = {"climate", "light", "switch", "fan"}
+    _domains = {"light", "switch", "fan", "climate", "sensor", "binary_sensor", "humidifier", "input_boolean", "lock"}
 
     def validate_service(self, service: ServiceRef) -> None:
         if service.service_type not in {"switch", "binarySwitch"}:
             raise ValueError("switch requires st: switch or binarySwitch")
-        unknown = set(dict(service.contract)) - {"on_type", "on_mode"}
+        unknown = set(dict(service.contract)) - {"on_type", "on_states", "off_states"}
         if unknown:
             raise ValueError(
                 f"switch has unsupported contract keys: {', '.join(sorted(unknown))}"
@@ -27,7 +27,7 @@ class SwitchServiceAdapter:
             raise ValueError("switch currently requires exactly one HA entity")
         domain, separator, _object_id = entity_ids[0].partition(".")
         if not separator or domain not in self._domains:
-            raise ValueError("switch requires a climate, light, switch, or fan entity")
+            raise ValueError("switch requires a light, switch, fan, climate, sensor, binary_sensor, humidifier, input_boolean or lock entity")
 
     async def read_state(
         self, hass, service: ServiceRef, entity_ids: tuple[str, ...]
@@ -35,18 +35,21 @@ class SwitchServiceAdapter:
         self.validate_service(service)
         self.validate_entities(entity_ids)
         state = hass.states.get(entity_ids[0])
-        if state is None:
+        if state is None or state.state in {"unknown", "unavailable"}:
             return {}
         domain = entity_ids[0].partition(".")[0]
         if domain == "climate":
-            if state.state in {"unknown", "unavailable", "off"}:
-                is_on = False
-            else:
-                is_on = True
+            # A climate entity is on whenever it is not off.
+            is_on = state.state != "off"
         elif state.state in {"on", "off"}:
             is_on = state.state == "on"
+        elif state.state in {"locked", "unlocked", "locking", "unlocking"}:
+            is_on = state.state in {"unlocked", "unlocking"}
         else:
-            return {}
+            truth = _custom_truth(service, state.state)
+            if truth is None:
+                return {}
+            is_on = truth
         return {"on": is_on if _on_type(service) == "bool" else int(is_on)}
 
     async def apply_command(
@@ -62,16 +65,15 @@ class SwitchServiceAdapter:
         if enabled is None:
             return
         domain, _separator, _object_id = entity_ids[0].partition(".")
-        if domain == "climate":
-            state = hass.states.get(entity_ids[0])
-            hvac_mode = "off" if not enabled else _on_mode(service)
-            allowed = state.attributes.get("hvac_modes") if state else None
-            if isinstance(allowed, list) and allowed and hvac_mode not in allowed:
-                return
+        # Read-only domains have no command path.
+        if domain in {"sensor", "binary_sensor"}:
+            return
+        if domain == "lock":
+            # HA locks expose lock/unlock, not turn_on/turn_off.
             await hass.services.async_call(
-                "climate",
-                "set_hvac_mode",
-                {"entity_id": entity_ids[0], "hvac_mode": hvac_mode},
+                "lock",
+                "unlock" if enabled else "lock",
+                {"entity_id": entity_ids[0]},
                 blocking=True,
             )
             return
@@ -92,6 +94,20 @@ def _parse_on_value(service: ServiceRef, value: object) -> bool | None:
             return None
         return bool(value)
     return value if isinstance(value, bool) else None
+
+
+def _custom_truth(service: ServiceRef, state: str) -> bool | None:
+    """Declared state sets for domains whose states are not on/off."""
+    custom_on = service.contract_value("on_states")
+    if isinstance(custom_on, (list, tuple)) and custom_on:
+        text = str(state)
+        if text in {str(v) for v in custom_on}:
+            return True
+        custom_off = service.contract_value("off_states")
+        if isinstance(custom_off, (list, tuple)) and custom_off:
+            return False if text in {str(v) for v in custom_off} else None
+        return False
+    return None
 
 
 def _on_type(service: ServiceRef) -> str:
