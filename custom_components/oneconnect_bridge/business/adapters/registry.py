@@ -5,6 +5,7 @@ from __future__ import annotations
 from .action import ADAPTER as ACTION
 from .api import ServiceAdapter
 from .alarm import ADAPTER as ALARM
+from .alarm_bell import ADAPTER as ALARM_BELL
 from .air_detector import ADAPTER as AIR_DETECTOR
 from .brightness import ADAPTER as BRIGHTNESS
 from .cct import ADAPTER as CCT
@@ -40,6 +41,7 @@ _SERVICE_ADAPTERS: dict[str, ServiceAdapter] = {
         OPENER,
         HCHO,
         ALARM,
+        ALARM_BELL,
         GAS_SENSOR,
         MODE,
         FAN,
