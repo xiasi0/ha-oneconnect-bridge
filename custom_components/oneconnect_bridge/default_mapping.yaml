@@ -1,59 +1,59 @@
-# 尊界S800模型在添加网关时就会自动注册并显示到智慧生活它只是为了验证您的网关工作没有问题。
-# 在正式添加子设备时你可以随时删除它
+# 默认配置会注册一个智控灯泡；请将下方 HA 实体占位符替换为实际实体。
+# 尊界S800模型示例已注释，如需使用请取消对应注释。
 
 schema: 1
 enabled: true
 gateway_serial: ""
 
 children:
-  oneconnect_link_probe:
-    product:
-      prod_id: ZJ0V
-      sub_prod_id: ""
-      device_type: "347"
-      manufacturer: "002"
-      model: "MAEXTRO-S800 Grand Design"
-      friendly_name: "尊界S800 Grand Design"
-      protocol_type: 1
-      setup_type: 0
-      known_fields_only: true
-      services: []
+  # oneconnect_link_probe:
+  #   product:
+  #     prod_id: ZJ0V
+  #     sub_prod_id: ""
+  #     device_type: "347"
+  #     manufacturer: "002"
+  #     model: "MAEXTRO-S800 Grand Design"
+  #     friendly_name: "尊界S800 Grand Design"
+  #     protocol_type: 1
+  #     setup_type: 0
+  #     known_fields_only: true
+  #     services: []
 
   # 以下子设备都是华为专为Home Assistant构建的专属物模型，你可以取消注释并修改对应的HA实体进行投影
   # 如果你需要投影更多华为设备，那么只需要复制对应的条目替换实体即可
   # 如果您需要自定义物模型那么您需要从华为Iot资料库找到对应的prodid自定包装注册设备信息。对于出现15013云端拒绝普遍都是产品设备信息包装错误。
   # 对于HA实体和华为服务不对等的情况您可以进行自定义覆盖。
 
-  # color_bulb_9mu7:
-  #   product:
-  #     prod_id: 9MU7
-  #     sub_prod_id: "00"
-  #     device_type: "119"
-  #     manufacturer: "002"
-  #     model: haTest10
-  #     friendly_name: 智控灯泡
-  #     room: 客厅
-  #     protocol_type: 6
-  #     setup_type: 0
-  #     known_fields_only: false
-  #     services:
-  #       - st: switch
-  #         sid: switch
-  #       - st: brightness
-  #         sid: brightness
-  #         contract:
-  #           min: 0
-  #           max: 100
-  #           step: 1
-  #       - st: cct
-  #         sid: cct
-  #   bindings:
-  #     - sid: switch
-  #       entities: [light.REPLACE_WITH_COLOR_BULB]
-  #     - sid: brightness
-  #       entities: [light.REPLACE_WITH_COLOR_BULB]
-  #     - sid: cct
-  #       entities: [light.REPLACE_WITH_COLOR_BULB]
+  color_bulb_9mu7:
+    product:
+      prod_id: 9MU7
+      sub_prod_id: "00"
+      device_type: "119"
+      manufacturer: "002"
+      model: haTest10
+      friendly_name: 智控灯泡
+      room: 客厅
+      protocol_type: 6
+      setup_type: 0
+      known_fields_only: false
+      services:
+        - st: switch
+          sid: switch
+        - st: brightness
+          sid: brightness
+          contract:
+            min: 1
+            max: 100
+            step: 1
+        - st: cct
+          sid: cct
+      bindings:
+        - sid: switch
+          entities: [light.REPLACE_WITH_COLOR_BULB]
+        - sid: brightness
+          entities: [light.REPLACE_WITH_COLOR_BULB]
+        - sid: cct
+          entities: [light.REPLACE_WITH_COLOR_BULB]
 
   # air_conditioner_9mxo:
   #   product:
