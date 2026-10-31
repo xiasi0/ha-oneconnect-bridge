@@ -11,6 +11,7 @@ from .cct import ADAPTER as CCT
 from .cleaner_robot import ADAPTER as CLEANER_ROBOT
 from .colour import ADAPTER as COLOUR
 from .electric import ADAPTER as ELECTRIC
+from .filter_element import ADAPTER as FILTER_ELEMENT
 from .gas_sensor import ADAPTER as GAS_SENSOR
 from .fan import ADAPTER as FAN
 from .hcho import ADAPTER as HCHO
@@ -46,11 +47,29 @@ _SERVICE_ADAPTERS: dict[str, ServiceAdapter] = {
         CLEANER_ROBOT,
         STATUS,
         ACTION,
+        FILTER_ELEMENT,
     )
 }
 for _service_id in ("switch1", "switch2", "switch3"):
     _SERVICE_ADAPTERS[_service_id] = SWITCH
 _SERVICE_ADAPTERS["leftAction"] = ACTION
+# A consumable filter is exposed under its own ``sid`` per filter slot, so a
+# product with two filters publishes ``filterElement1`` and ``filterElement2``.
+# The numbered variants behave identically, so they all reuse this adapter.
+for _service_id in (
+    "filterElement",
+    "filterElement1",
+    "filterElement2",
+    "filterElement3",
+    "filterElement4",
+    "filterElement5",
+    "filterElement6",
+    "filterElement7",
+    "filterElement8",
+    "commonFilterElement1",
+    "commonFilterElement2",
+):
+    _SERVICE_ADAPTERS[_service_id] = FILTER_ELEMENT
 
 
 def get_service_adapter(service_id: str) -> ServiceAdapter:
