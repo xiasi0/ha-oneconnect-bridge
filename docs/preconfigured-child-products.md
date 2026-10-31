@@ -1,7 +1,7 @@
 # 预置子设备模型
 
 以下模型是华为为 Home Assistant 提供的专属物模型，设备 Profile 包含对应的 H5 页面标识。
-示例默认写在 `default_mapping.yaml` 的注释中，不会自动注册；使用时取消对应条目注释，并替换 HA 实体。
+默认配置会启用 9MU7 智控灯泡，但仍需将其中的 HA 实体占位符替换为实际实体；其他模型仍以注释示例提供。
 
 | `prod_id` | `DeviceNameSpreading` | `Profile` |
 | --- | --- | --- |
